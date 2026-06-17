@@ -1,0 +1,26 @@
+build/
+*.o
+*.a
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+*.plist
+*.dSYM/
+.DS_Store
+
+# UI build + deps (committed: ui/src; ignored: outputs/deps)
+ui/node_modules/
+ui/dist/
+
+# webview is cloned by scripts/fetch_webview.sh (cJSON under src/vendor IS committed)
+src/vendor/webview/
+
+# user data — a book is a private SQLite file; NEVER publish real financial data
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+books.json
+
+# local editor / tooling config
+.claude/
