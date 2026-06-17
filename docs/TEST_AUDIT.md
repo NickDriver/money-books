@@ -82,6 +82,15 @@ not dangerous · **LOW** = cosmetic / stylistic.
 - **Real-bug hypothesis?** No bug in the `<=0` branch itself (it exists and looks correct), but the
   branch is **uncovered**, so a future regression that drops it would not be caught.
 
+> **RESOLVED (2026-06-17).** Added three bill tests mirroring the invoice suite in `src/bill/bill.c`:
+> `bill.cannot_edit_after_enter` (D13 lock — add_line/enter/remove_line/update all rejected post-enter),
+> `bill.enter_empty_fails`, and `bill.edit_draft_lines_and_reopen_open` (the AP twin of the invoice
+> reopen path: remove_line + `mb_bill_lines` + update on a DRAFT, enter → AP credited, **reopen →
+> reverse → AP nets to zero**, re-edit, re-enter). The reopen test asserts net-zero on BOTH the AP
+> control account and the **per-vendor** balance (`mb_counterparty_balance`), proving the D26 reversal
+> correctly preserves the vendor tag. All pass — the "unknown" risk resolved to **no bug**; the bill
+> mirror functions (`mb_bill_lines/remove_line/update/revert_to_draft`) are now covered. 87 tests, 0 leaks.
+
 ### F3 — Bill module: D13 lock and the entire edit/revert family are untested (invoice/bill asymmetry)
 - **file:line:** `src/bill/bill.c:375` and `:403` are the only two bill tests; gap against
   `mb_bill_enter` lock, `mb_bill_lines` (`:271`), `mb_bill_remove_line` (`:310`),

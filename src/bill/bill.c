@@ -384,6 +384,7 @@ mb_err mb_bill_revert_to_draft(mb_store *s, const char *id) {
 #include "../account/account.h"
 #include "../counterparty/counterparty.h"
 #include "../journal/journal.h"
+#include "../payment/payment.h"
 #include "../seed/seed.h"
 
 TEST(bill, enter_posts_expense_and_ap) {
@@ -436,6 +437,95 @@ TEST(bill, list_carries_vendor_status_total) {
   ASSERT_EQ_INT(rows[0].status, MB_BILL_DRAFT);
   ASSERT_MONEY_EQ(rows[0].total, 12000);
   free(rows);
+  mb_store_close(s);
+}
+
+/* ---- bill edit/revert/lock family — mirror of the invoice tests (audit F3) ---- */
+
+/* set up a seeded book with one expense category + one vendor */
+static void bill_setup(mb_test *t, mb_store *s, char expense[40], char vendor[40]) {
+  ASSERT_OK(mb_seed_system_accounts(s));
+  mb_account_new acc = {.code="6010", .name="Software", .type=MB_ACCT_EXPENSE, .role=MB_ROLE_CATEGORY};
+  ASSERT_OK(mb_account_create(s, &acc, expense));
+  mb_counterparty_new v = {.name="AWS", .kind=MB_CP_VENDOR};
+  ASSERT_OK(mb_counterparty_create(s, &v, vendor));
+}
+
+/* D13: once a bill is entered it is locked — no line edits, no re-enter (twin of
+ * invoice.cannot_edit_after_issue, plus the remove_line/update paths). */
+TEST(bill, cannot_edit_after_enter) {
+  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
+  char expense[40], vendor[40]; bill_setup(t, s, expense, vendor);
+  char bill[40]; ASSERT_OK(mb_bill_create(s, vendor, NULL, NULL, NULL, bill));
+  char lid[40];
+  mb_bill_line_in l = {.description="X", .qty_centi=100, .unit_price=5000, .account_id=expense};
+  ASSERT_OK(mb_bill_add_line(s, bill, &l, lid));
+  ASSERT_OK(mb_bill_enter(s, bill, "2026-07-03"));
+  /* now locked */
+  ASSERT_ERR(mb_bill_add_line(s, bill, &l, lid), MB_ERR_INVALID_ARG);
+  ASSERT_ERR(mb_bill_enter(s, bill, "2026-07-03"), MB_ERR_INVALID_ARG);
+  ASSERT_ERR(mb_bill_remove_line(s, lid), MB_ERR_INVALID_ARG);
+  ASSERT_ERR(mb_bill_update(s, bill, "B-9", "2026-08-01", "no"), MB_ERR_INVALID_ARG);
+  mb_store_close(s);
+}
+
+/* entering a bill with no lines fails (twin of invoice.issue_empty_fails) */
+TEST(bill, enter_empty_fails) {
+  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
+  char expense[40], vendor[40]; bill_setup(t, s, expense, vendor);
+  char bill[40]; ASSERT_OK(mb_bill_create(s, vendor, NULL, NULL, NULL, bill));
+  ASSERT_ERR(mb_bill_enter(s, bill, "2026-07-04"), MB_ERR_INVALID_ARG);
+  mb_store_close(s);
+}
+
+/* edit a DRAFT (remove_line + lines + update), enter (AP credited), reopen (reverse → AP nets to
+ * zero per vendor), re-edit and re-enter — the AP twin of invoice.edit_draft_lines_and_reopen_open.
+ * This is the path the audit flagged as entirely unproven on the bill side. */
+TEST(bill, edit_draft_lines_and_reopen_open) {
+  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
+  char expense[40], vendor[40]; bill_setup(t, s, expense, vendor);
+  char ap[40]; ASSERT_OK(mb_store_meta_get(s, "ap_account_id", ap, sizeof ap));
+
+  char bill[40]; ASSERT_OK(mb_bill_create(s, vendor, "B-1", "2026-07-01", NULL, bill));
+  char l1[40], l2[40];
+  mb_bill_line_in a = {.description="A", .qty_centi=100, .unit_price=10000, .account_id=expense};
+  mb_bill_line_in b = {.description="B", .qty_centi=100, .unit_price=5000, .account_id=expense};
+  ASSERT_OK(mb_bill_add_line(s, bill, &a, l1));
+  ASSERT_OK(mb_bill_add_line(s, bill, &b, l2));
+
+  /* edit a DRAFT: remove a line, read lines back, update header */
+  ASSERT_OK(mb_bill_remove_line(s, l2));
+  mb_bill_line *lines = NULL; int ln = 0;
+  ASSERT_OK(mb_bill_lines(s, bill, &lines, &ln));
+  ASSERT_EQ_INT(ln, 1);
+  ASSERT_STR_EQ(lines[0].description, "A");
+  ASSERT_STR_EQ(lines[0].account_name, "Software");
+  free(lines);
+  ASSERT_OK(mb_bill_update(s, bill, "B-1b", "2026-08-01", "edited"));
+
+  /* enter → OPEN, AP credited (credit-normal control → negative debit-sum) */
+  ASSERT_OK(mb_bill_enter(s, bill, "2026-07-01"));
+  mb_money bal; ASSERT_OK(mb_account_balance(s, ap, &bal)); ASSERT_MONEY_EQ(bal, -10000);
+  mb_money vbal; ASSERT_OK(mb_counterparty_balance(s, vendor, MB_PAY_BILL, &vbal));
+  ASSERT_MONEY_EQ(vbal, -10000);   /* we owe the vendor $100 */
+
+  /* reopen an OPEN bill → reversing entry cancels the posting, status back to DRAFT, AP nets to 0 */
+  ASSERT_OK(mb_bill_revert_to_draft(s, bill));
+  mb_bill got; ASSERT_OK(mb_bill_get(s, bill, &got));
+  ASSERT_EQ_INT(got.status, MB_BILL_DRAFT);
+  ASSERT_OK(mb_account_balance(s, ap, &bal)); ASSERT_MONEY_EQ(bal, 0);          /* edit-on-top: net zero */
+  ASSERT_OK(mb_counterparty_balance(s, vendor, MB_PAY_BILL, &vbal));
+  ASSERT_MONEY_EQ(vbal, 0);   /* reversal preserved the vendor tag, so per-vendor AP nets to zero too */
+
+  /* can edit again (DRAFT), then re-enter */
+  ASSERT_OK(mb_bill_remove_line(s, l1));
+  mb_bill_line_in c = {.description="C", .qty_centi=100, .unit_price=30000, .account_id=expense};
+  char l3[40]; ASSERT_OK(mb_bill_add_line(s, bill, &c, l3));
+  ASSERT_OK(mb_bill_enter(s, bill, "2026-07-02"));
+  ASSERT_OK(mb_account_balance(s, ap, &bal)); ASSERT_MONEY_EQ(bal, -30000);
+
+  /* once entered again, a DRAFT line edit is blocked */
+  ASSERT_ERR(mb_bill_remove_line(s, l3), MB_ERR_INVALID_ARG);
   mb_store_close(s);
 }
 #endif
