@@ -156,5 +156,4 @@ embedded HTTP/SSE MCP transport, then packaging (signed `.app`) and peer-to-peer
 
 ## License
 
-Personal project, early stage — a license has not been chosen yet, so all rights are reserved for
-now. Open an issue if you'd like to use it for something.
+[MIT](LICENSE) © 2026 Nick Chelabchi.
