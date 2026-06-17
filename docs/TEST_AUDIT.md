@@ -59,6 +59,15 @@ not dangerous · **LOW** = cosmetic / stylistic.
   so the books can silently go into a state the spec's "always balanced / audit-true" principle
   arguably forbids. Investigate first.
 
+> **RESOLVED (2026-06-17).** The mislabeled test was retired and split into three focused specs in
+> `src/payment/payment.c`: `payment.rejects_payment_on_non_payable` (DRAFT + PAID rejection on BOTH
+> the invoice/AR and bill/AP sides — closes the untested AP path), `payment.rejects_non_positive_
+> amount_and_missing_inputs` (amount 0 and −100, plus missing date / cash account, asserted on a
+> genuinely OPEN invoice so only the tested input can reject — then asserts nothing was mutated), and
+> `payment.allows_overpayment` (pins the D26 decision that over-balance is intentionally permitted, so
+> a future over-balance guard would fail here). All pass — confirming the hypothesis that the `amount
+> <= 0` branch was correct but uncovered, not buggy. Net suite: 84 tests, 0 leaks.
+
 ### F2 — `payment.rejects_non_open_and_bad_amount` tests neither a bad amount nor the AP side
 - **file:line:** `src/payment/payment.c:199-211`
 - **Should verify (per its name):** (a) payment against a non-payable (DRAFT/PAID/VOID) target is

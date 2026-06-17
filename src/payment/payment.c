@@ -382,21 +382,8 @@ TEST(payment, invoice_partial_then_paid) {
   mb_store_close(s);
 }
 
-TEST(payment, rejects_non_open_and_bad_amount) {
-  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
-  ASSERT_OK(mb_seed_system_accounts(s));
-  char bank[40];
-  mb_account_new ab = {.code="1000", .name="Checking", .type=MB_ACCT_ASSET, .role=MB_ROLE_ACCOUNT};
-  ASSERT_OK(mb_account_create(s, &ab, bank));
-  char cp[40]; mb_counterparty_new c = {.name="Acme", .kind=MB_CP_CUSTOMER};
-  ASSERT_OK(mb_counterparty_create(s, &c, cp));
-  char inv[40]; ASSERT_OK(mb_invoice_create(s, cp, NULL, NULL, NULL, inv));  /* still DRAFT */
-  char pid[40];
-  ASSERT_ERR(mb_payment_record(s, "2026-07-01", 100, bank, MB_PAY_INVOICE, inv, pid), MB_ERR_INVALID_ARG);
-  mb_store_close(s);
-}
-
-/* ---- D26: customer/vendor credit (balance-forward + manual application) ---- */
+/* ---- input-contract tests (was the mislabeled `rejects_non_open_and_bad_amount`, audit F2) ----
+ * These setup helpers are defined just below and shared with the D26 tests. */
 
 /* small helpers to set up a seeded book with a bank + income/expense category + one party.
  * They take `t` so the assertion macros can report/abort on setup failure. */
@@ -417,6 +404,91 @@ static void make_issued_invoice(mb_test *t, mb_store *s, const char *cp, const c
   ASSERT_OK(mb_invoice_add_line(s, inv, &l, lid));
   ASSERT_OK(mb_invoice_issue(s, inv, date));
 }
+static void make_entered_bill(mb_test *t, mb_store *s, const char *cp, const char *expense,
+                              mb_money cents, const char *date, char bill[40]) {
+  ASSERT_OK(mb_bill_create(s, cp, NULL, NULL, NULL, bill));
+  char lid[40];
+  mb_bill_line_in l = {.description="Parts", .qty_centi=100, .unit_price=cents, .account_id=expense};
+  ASSERT_OK(mb_bill_add_line(s, bill, &l, lid));
+  ASSERT_OK(mb_bill_enter(s, bill, date));
+}
+
+/* A payment may only be recorded against a payable (OPEN/PARTIAL) document — not a DRAFT or a
+ * PAID one — on BOTH the invoice (AR) and the bill (AP) side. */
+TEST(payment, rejects_payment_on_non_payable) {
+  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
+  char bank[40], income[40], expense[40]; seed_book(t, s, bank, income, expense);
+  char cust[40]; mb_counterparty_new c = {.name="Acme", .kind=MB_CP_CUSTOMER};
+  ASSERT_OK(mb_counterparty_create(s, &c, cust));
+  char vend[40]; mb_counterparty_new v = {.name="Supplier", .kind=MB_CP_VENDOR};
+  ASSERT_OK(mb_counterparty_create(s, &v, vend));
+  char pid[40];
+
+  /* invoice side: DRAFT is not payable */
+  char draft_inv[40]; ASSERT_OK(mb_invoice_create(s, cust, NULL, NULL, NULL, draft_inv));
+  ASSERT_ERR(mb_payment_record(s, "2026-07-01", 5000, bank, MB_PAY_INVOICE, draft_inv, pid), MB_ERR_INVALID_ARG);
+
+  /* invoice side: a fully PAID invoice is not payable again */
+  char inv[40]; make_issued_invoice(t, s, cust, income, 10000, "2026-07-01", inv);
+  ASSERT_OK(mb_payment_record(s, "2026-07-05", 10000, bank, MB_PAY_INVOICE, inv, pid));   /* → PAID */
+  ASSERT_ERR(mb_payment_record(s, "2026-07-06", 1000, bank, MB_PAY_INVOICE, inv, pid), MB_ERR_INVALID_ARG);
+
+  /* bill side: DRAFT is not payable (the AP path was previously untested) */
+  char draft_bill[40]; ASSERT_OK(mb_bill_create(s, vend, NULL, NULL, NULL, draft_bill));
+  ASSERT_ERR(mb_payment_record(s, "2026-07-01", 5000, bank, MB_PAY_BILL, draft_bill, pid), MB_ERR_INVALID_ARG);
+
+  /* bill side: a fully PAID bill is not payable again */
+  char bill[40]; make_entered_bill(t, s, vend, expense, 8000, "2026-07-01", bill);
+  ASSERT_OK(mb_payment_record(s, "2026-07-05", 8000, bank, MB_PAY_BILL, bill, pid));      /* → PAID */
+  ASSERT_ERR(mb_payment_record(s, "2026-07-06", 1000, bank, MB_PAY_BILL, bill, pid), MB_ERR_INVALID_ARG);
+  mb_store_close(s);
+}
+
+/* The amount must be strictly positive (zero and negative are rejected), and the required string
+ * inputs (date, cash account) must be present. Asserted on a genuinely OPEN invoice so the ONLY
+ * thing that can reject the call is the input being tested. */
+TEST(payment, rejects_non_positive_amount_and_missing_inputs) {
+  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
+  char bank[40], income[40], expense[40]; seed_book(t, s, bank, income, expense);
+  char cust[40]; mb_counterparty_new c = {.name="Acme", .kind=MB_CP_CUSTOMER};
+  ASSERT_OK(mb_counterparty_create(s, &c, cust));
+  char inv[40]; make_issued_invoice(t, s, cust, income, 50000, "2026-07-01", inv);   /* OPEN, $500 owed */
+  char pid[40];
+
+  /* zero and negative amounts are invalid */
+  ASSERT_ERR(mb_payment_record(s, "2026-07-05", 0,    bank, MB_PAY_INVOICE, inv, pid), MB_ERR_INVALID_ARG);
+  ASSERT_ERR(mb_payment_record(s, "2026-07-05", -100, bank, MB_PAY_INVOICE, inv, pid), MB_ERR_INVALID_ARG);
+  /* missing date / cash account are invalid */
+  ASSERT_ERR(mb_payment_record(s, NULL, 1000, bank, MB_PAY_INVOICE, inv, pid), MB_ERR_INVALID_ARG);
+  ASSERT_ERR(mb_payment_record(s, "",   1000, bank, MB_PAY_INVOICE, inv, pid), MB_ERR_INVALID_ARG);
+  ASSERT_ERR(mb_payment_record(s, "2026-07-05", 1000, NULL, MB_PAY_INVOICE, inv, pid), MB_ERR_INVALID_ARG);
+  ASSERT_ERR(mb_payment_record(s, "2026-07-05", 1000, "",   MB_PAY_INVOICE, inv, pid), MB_ERR_INVALID_ARG);
+
+  /* none of the rejected calls should have changed anything — invoice still fully OPEN, $0 settled */
+  mb_invoice got; ASSERT_OK(mb_invoice_get(s, inv, &got)); ASSERT_EQ_INT(got.status, MB_INV_OPEN);
+  mb_money paid; ASSERT_OK(mb_payment_total_for(s, MB_PAY_INVOICE, inv, &paid));
+  ASSERT_MONEY_EQ(paid, 0);
+  mb_store_close(s);
+}
+
+/* Overpayment is ALLOWED by design (D26): paying more than the balance succeeds and marks the
+ * document PAID. This pins the decision so a future "helpful" over-balance guard would fail here.
+ * (The resulting credit mechanics are proven by the D26 tests below.) */
+TEST(payment, allows_overpayment) {
+  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
+  char bank[40], income[40], expense[40]; seed_book(t, s, bank, income, expense);
+  char cust[40]; mb_counterparty_new c = {.name="Acme", .kind=MB_CP_CUSTOMER};
+  ASSERT_OK(mb_counterparty_create(s, &c, cust));
+  char inv[40]; make_issued_invoice(t, s, cust, income, 10000, "2026-07-01", inv);   /* $100 owed */
+  char pid[40];
+  ASSERT_OK(mb_payment_record(s, "2026-07-05", 15000, bank, MB_PAY_INVOICE, inv, pid));  /* pay $150 */
+  mb_invoice got; ASSERT_OK(mb_invoice_get(s, inv, &got)); ASSERT_EQ_INT(got.status, MB_INV_PAID);
+  mb_money credit; ASSERT_OK(mb_credit_available(s, cust, MB_PAY_INVOICE, &credit));
+  ASSERT_MONEY_EQ(credit, 5000);   /* the $50 excess is real, available credit */
+  mb_store_close(s);
+}
+
+/* ---- D26: customer/vendor credit (balance-forward + manual application) ---- */
 
 TEST(payment, overpay_records_customer_credit) {
   mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
