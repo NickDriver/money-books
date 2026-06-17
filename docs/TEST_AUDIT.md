@@ -150,6 +150,11 @@ not dangerous · **LOW** = cosmetic / stylistic.
 - **Real-bug hypothesis?** Possible — unverified. The status-filtering SQL in the report layer is a
   distinct code path from `mb_account_balance`, and it has no negative/reversal fixture.
 
+> **RESOLVED (2026-06-17).** Added `report.aging_all_buckets_ar_and_ap`: as of a fixed date, one
+> issued invoice per bucket (future→current, 10d→1-30, 41d→31-60, 71d→61-90, 180d→90+) with distinct
+> amounts, asserting every bucket and the total; plus two entered bills exercising `mb_report_ap_aging`
+> (previously zero tests) in the 1-30 and 90+ buckets. All pass — no off-by-one at the boundaries. 89 tests.
+
 ### F6 — `report.ar_aging_buckets` tests one bucket; other buckets and `ap_aging` are untested
 - **file:line:** `src/report/report.c:424` (and total gap: `mb_report_ap_aging` at
   `src/report/report.c:207` has **zero** tests).

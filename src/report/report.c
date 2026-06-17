@@ -329,6 +329,7 @@ mb_err mb_report_category_txns(mb_store *s, const char *acct_type, const char *f
 #include "../journal/journal.h"
 #include "../counterparty/counterparty.h"
 #include "../invoice/invoice.h"
+#include "../bill/bill.h"
 #include "../seed/seed.h"
 
 /* helper: post a simple two-line entry */
@@ -442,6 +443,68 @@ TEST(report, ar_aging_buckets) {
   ASSERT_MONEY_EQ(ag.total, 100000);
   ASSERT_MONEY_EQ(ag.d1_30, 100000);
   ASSERT_MONEY_EQ(ag.current, 0);
+  mb_store_close(s);
+}
+
+/* helpers for the all-buckets aging test: one issued invoice / entered bill with a chosen due date */
+static void aged_invoice(mb_test *t, mb_store *s, const char *cp, const char *income,
+                         const char *number, const char *due, mb_money cents) {
+  char inv[40]; ASSERT_OK(mb_invoice_create(s, cp, number, due, NULL, inv));
+  char lid[40];
+  mb_invoice_line_in l = {.description="Work", .qty_centi=100, .unit_price=cents, .account_id=income};
+  ASSERT_OK(mb_invoice_add_line(s, inv, &l, lid));
+  ASSERT_OK(mb_invoice_issue(s, inv, due));
+}
+static void aged_bill(mb_test *t, mb_store *s, const char *vendor, const char *expense,
+                      const char *number, const char *due, mb_money cents) {
+  char bill[40]; ASSERT_OK(mb_bill_create(s, vendor, number, due, NULL, bill));
+  char lid[40];
+  mb_bill_line_in l = {.description="Parts", .qty_centi=100, .unit_price=cents, .account_id=expense};
+  ASSERT_OK(mb_bill_add_line(s, bill, &l, lid));
+  ASSERT_OK(mb_bill_enter(s, bill, due));
+}
+
+/* audit F6: every aging bucket lands correctly given due dates, on BOTH AR and AP.
+ * As of 2026-06-30, ages from due date: +future=current, 10d=1-30, 41d=31-60, 71d=61-90, 180d=90+. */
+TEST(report, aging_all_buckets_ar_and_ap) {
+  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
+  ASSERT_OK(mb_seed_system_accounts(s));
+  char income[40], expense[40];
+  mb_account_new ai = {.code="4000", .name="Income",  .type=MB_ACCT_INCOME,  .role=MB_ROLE_CATEGORY};
+  mb_account_new ae = {.code="6000", .name="Parts",   .type=MB_ACCT_EXPENSE, .role=MB_ROLE_CATEGORY};
+  ASSERT_OK(mb_account_create(s, &ai, income));
+  ASSERT_OK(mb_account_create(s, &ae, expense));
+  char cust[40]; mb_counterparty_new c = {.name="Acme", .kind=MB_CP_CUSTOMER};
+  ASSERT_OK(mb_counterparty_create(s, &c, cust));
+  char vend[40]; mb_counterparty_new v = {.name="Supplier", .kind=MB_CP_VENDOR};
+  ASSERT_OK(mb_counterparty_create(s, &v, vend));
+  const char *as_of = "2026-06-30";
+
+  /* AR: one invoice per bucket */
+  aged_invoice(t, s, cust, income, "C", "2026-07-15", 10000);  /* future  → current */
+  aged_invoice(t, s, cust, income, "A", "2026-06-20", 20000);  /* 10 days → 1-30   */
+  aged_invoice(t, s, cust, income, "B", "2026-05-20", 30000);  /* 41 days → 31-60  */
+  aged_invoice(t, s, cust, income, "D", "2026-04-20", 40000);  /* 71 days → 61-90  */
+  aged_invoice(t, s, cust, income, "E", "2026-01-01", 50000);  /* 180days → 90+    */
+
+  mb_aging ar;
+  ASSERT_OK(mb_report_ar_aging(s, as_of, &ar));
+  ASSERT_MONEY_EQ(ar.current,  10000);
+  ASSERT_MONEY_EQ(ar.d1_30,    20000);
+  ASSERT_MONEY_EQ(ar.d31_60,   30000);
+  ASSERT_MONEY_EQ(ar.d61_90,   40000);
+  ASSERT_MONEY_EQ(ar.d90_plus, 50000);
+  ASSERT_MONEY_EQ(ar.total,   150000);
+
+  /* AP: two bills in distinct buckets (mb_report_ap_aging had no test at all) */
+  aged_bill(t, s, vend, expense, "P1", "2026-06-25", 5000);    /* 5 days  → 1-30  */
+  aged_bill(t, s, vend, expense, "P2", "2026-03-01", 7000);    /* ~121d   → 90+   */
+  mb_aging ap;
+  ASSERT_OK(mb_report_ap_aging(s, as_of, &ap));
+  ASSERT_MONEY_EQ(ap.d1_30,    5000);
+  ASSERT_MONEY_EQ(ap.d90_plus, 7000);
+  ASSERT_MONEY_EQ(ap.total,   12000);
+  ASSERT_MONEY_EQ(ap.current,  0);
   mb_store_close(s);
 }
 
