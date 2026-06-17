@@ -19,6 +19,12 @@
 - **Findings by severity:** HIGH **3** · MED **6** · LOW **4**. Plus a Coverage-Gap section
   (behaviors with *no* test).
 
+> **TRIAGE COMPLETE (2026-06-17).** All findings F1–F11 worked through. F1 → built as the D26
+> customer/vendor credit feature; F2/F3 → resolved (no bug); F5 → covered and **surfaced one real
+> bug, Concern C1** (reversed entries not netted out of `category_txns`), written down and deferred
+> per the owner's rule; F6–F11 → resolved (no further bugs). Suite grew 76 → 89 tests, 0 leaks. The
+> only open item from this pass is **C1** (see §5).
+
 The single most important takeaway: **finding F1 (overpayment not rejected) is a likely real bug
 that no test guards**, and the test that *looks* like it should (`payment.rejects_non_open_and_bad_amount`)
 does not actually exercise a bad amount at all (F2).
@@ -213,6 +219,10 @@ not dangerous · **LOW** = cosmetic / stylistic.
 - **Severity:** **LOW**
 - **Real-bug hypothesis?** No.
 
+> **RESOLVED (2026-06-17).** `seed.system_only_creates_four` now asserts all four control-account
+> meta keys (`ar_account_id`/`ap_account_id`/`tax_account_id`/`opening_balance_equity_id`) are written
+> and resolve to the right account code + SYSTEM role — the keys every accrual posting depends on.
+
 ### F10 — `seed.system_only_creates_four` does not verify the recorded control-account meta keys
 - **file:line:** `src/seed/seed.c:85`
 - **Concern:** Seeding records `ar_account_id` / `ap_account_id` / `tax_account_id` / opening into
@@ -221,6 +231,10 @@ not dangerous · **LOW** = cosmetic / stylistic.
   modules' tests, so coverage exists — but the seed test itself under-asserts its own contract.
 - **Severity:** **LOW**
 - **Real-bug hypothesis?** No (covered transitively).
+
+> **RESOLVED (2026-06-17).** Tightened `ASSERT(after > 0)` to `ASSERT_EQ_INT(after, 32)`, pinning the
+> API onboarding path to the full freelancer starter chart (the same count `seed.starter_chart_full`
+> pins at the engine layer) — so onboarding the wrong/partial chart would now be caught.
 
 ### F11 — `api.onboarding_seeds_once` asserts `account_count > 0`, not the expected count
 - **file:line:** `src/api/api.c:886` (esp. `:904` `ASSERT(after > 0)`)

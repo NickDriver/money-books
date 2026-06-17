@@ -930,7 +930,7 @@ TEST(api, onboarding_seeds_once) {
   j = cJSON_Parse(r);
   ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(j, "onboarded")));
   int after = (long)cJSON_GetObjectItem(j, "account_count")->valuedouble;
-  ASSERT(after > 0);
+  ASSERT_EQ_INT(after, 32);   /* freelancer template = the full starter chart (pinned by seed.starter_chart_full) */
   cJSON_Delete(j); free(r);
 
   /* onboarding again is a no-op (no duplicate-seed error, count unchanged) */

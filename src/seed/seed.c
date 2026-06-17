@@ -90,6 +90,20 @@ TEST(seed, system_only_creates_four) {
   mb_account a;
   ASSERT_OK(mb_account_find_by_code(s, "1200", &a));  /* Accounts Receivable */
   ASSERT_EQ_INT(a.role, MB_ROLE_SYSTEM);
+
+  /* the control-account meta keys must be recorded and resolve to the right accounts —
+   * invoices/bills/payments read these, so a seed that created the accounts but forgot the meta
+   * keys would silently break every accrual posting. */
+  struct { const char *key; const char *code; } keys[] = {
+    {"ar_account_id", "1200"}, {"ap_account_id", "2000"},
+    {"tax_account_id", "2200"}, {"opening_balance_equity_id", "3900"},
+  };
+  for (int i = 0; i < 4; i++) {
+    char id[40]; ASSERT_OK(mb_store_meta_get(s, keys[i].key, id, sizeof id));
+    mb_account got; ASSERT_OK(mb_account_get(s, id, &got));
+    ASSERT_STR_EQ(got.code, keys[i].code);
+    ASSERT_EQ_INT(got.role, MB_ROLE_SYSTEM);
+  }
   mb_store_close(s);
 }
 
