@@ -335,8 +335,8 @@ TEST(store, stamps_increment) {
   ASSERT_OK(mb_store_next_stamp(s, &s1, &l1));
   ASSERT_OK(mb_store_next_stamp(s, &s2, &l2));
   ASSERT_OK(mb_store_commit(s));
-  EXPECT(s2 == s1 + 1);
-  EXPECT(l2 == l1 + 1);
+  ASSERT_EQ_INT(s2, s1 + 1);   /* seq is strictly monotonic (D20 sync identity) */
+  ASSERT_EQ_INT(l2, l1 + 1);   /* lamport likewise */
   mb_store_close(s);
 }
 

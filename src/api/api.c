@@ -991,6 +991,19 @@ static void grab(const char *json, const char *key, char *out, size_t n) {
   cJSON_Delete(j);
 }
 
+/* final running balance of an account, read through the report.ledger API (test helper) */
+static mb_money api_ledger_balance(mb_store *s, const char *acct) {
+  char args[80], *r = NULL;
+  snprintf(args, sizeof args, "{\"account_id\":\"%s\"}", acct);
+  if (mb_api_dispatch(s, "report.ledger", args, &r) != MB_OK) { free(r); return -1; }
+  cJSON *j = cJSON_Parse(r); free(r);
+  cJSON *rows = cJSON_GetObjectItem(j, "rows");
+  int n = cJSON_GetArraySize(rows);
+  mb_money bal = (n > 0) ? (mb_money)cJSON_GetObjectItem(cJSON_GetArrayItem(rows, n - 1), "running")->valuedouble : 0;
+  cJSON_Delete(j);
+  return bal;
+}
+
 TEST(api, income_expense_flow) {
   mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
   char bank[40], income[40], sw[40];
@@ -1050,6 +1063,14 @@ TEST(api, invoice_payment_flow) {
   ASSERT_OK(mb_api_dispatch(s, "invoice.get", args, &r));
   char status[16]; grab(r, "status", status, sizeof status); free(r);
   ASSERT_STR_EQ(status, "PAID");
+
+  /* verify the resulting balances through the API, not just the status flag:
+   * AR fully cleared and the bank holds the cash (catches a payment posted to the wrong account
+   * or amount that still happens to flip status because paid >= total). */
+  char ar[40]; ASSERT_OK(mb_store_meta_get(s, "ar_account_id", ar, sizeof ar));
+  ASSERT_MONEY_EQ(api_ledger_balance(s, ar), 0);
+  ASSERT_MONEY_EQ(api_ledger_balance(s, bank), 100000);
+  ASSERT_MONEY_EQ(api_ledger_balance(s, income), -100000);
   mb_store_close(s);
 }
 

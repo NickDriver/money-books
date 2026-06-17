@@ -168,6 +168,11 @@ not dangerous · **LOW** = cosmetic / stylistic.
 - **Real-bug hypothesis?** Possible — date-bucket boundary math is a classic off-by-one site and is
   unexercised at the edges.
 
+> **RESOLVED (2026-06-17).** `api.invoice_payment_flow` now reads balances back through the
+> `report.ledger` API (new `api_ledger_balance` helper) and asserts AR → 0, bank → +$1000, income →
+> −$1000 after full payment — so a payment posted to the wrong account/amount that still flipped status
+> would now be caught. Passes (no bug).
+
 ### F7 — `api.invoice_payment_flow` asserts only final status, not the resulting balances
 - **file:line:** `src/api/api.c:992-1025`
 - **Should verify:** the full create→add_line→issue→pay path through the JSON API produces a PAID
@@ -181,6 +186,10 @@ not dangerous · **LOW** = cosmetic / stylistic.
 - **Real-bug hypothesis?** No (engine path is covered); flagged because the API translation layer
   itself (arg names → engine call) is asserted only by a boolean status.
 
+> **RESOLVED (2026-06-17).** Changed the two `EXPECT(...)` to `ASSERT_EQ_INT(...)` so a broken
+> monotonic seq/lamport (a D20 sync-identity invariant) fails the test loudly instead of merely
+> recording and continuing.
+
 ### F8 — `store.stamps_increment` uses EXPECT (non-fatal) for the core monotonic-stamp invariant
 - **file:line:** `src/store/store.c:303-314`
 - **Concern:** The Lamport/seq monotonicity (a D20 sync-identity invariant) is checked with
@@ -188,6 +197,12 @@ not dangerous · **LOW** = cosmetic / stylistic.
   for reporting — but it signals this is treated as soft. Minor.
 - **Severity:** **LOW**
 - **Real-bug hypothesis?** No.
+
+> **RESOLVED (2026-06-17).** `tests/integration_smoke.c` `integration.invoice_total` was rewritten
+> into a genuine cross-module integration test: it opens an in-memory book, seeds system accounts,
+> creates a customer + income account, builds an invoice from three dollar-string line prices, asserts
+> `mb_invoice_total` = $150.00, then issues it and asserts Accounts Receivable is debited $150.00. It
+> now lives up to both its name and the "integration" suite.
 
 ### F9 — `integration.invoice_total` name/behavior mismatch
 - **file:line:** `tests/integration_smoke.c:10`
