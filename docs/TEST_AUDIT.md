@@ -123,6 +123,16 @@ not dangerous · **LOW** = cosmetic / stylistic.
   not catch a regression where the longest-key-first ordering breaks and tokens are left unredacted,
   *as long as restore symmetrically failed too* — which is plausible since both share the map.
 
+> **COVERED + FOUND A REAL BUG (2026-06-17).** Added `report.reversed_entry_nets_out`. It proves the
+> *correct* parts (the journal/audit view includes both the original and the REVERSAL; P&L and trial
+> balance net to zero because balance reports sum all postings). It also **confirmed a real bug —
+> Concern C1 (deferred):** `mb_report_category_txns` does NOT net out a reversed entry — it returns 1
+> row at full value when it should return 0. Root cause: `mb_journal_reverse` never flips the original
+> entry's status to `REVERSED`, so the `status='POSTED'` filter keeps the original and only hides the
+> `REVERSAL`. The correct assertion is committed but commented out, pending the fix. **See Concern C1
+> at the bottom of this document.** Per the owner's rule, the bug was written down and skipped, not
+> patched, so the suite stays green.
+
 ### F5 — Report layer never includes a REVERSED entry, so "POSTED-only" filtering is unproven there
 - **file:line:** `src/report/report.c` — all of `trial_balance_balances` (`:350`),
   `pnl_and_balance_sheet` (`:365`), `category_txns_income_and_expense` (`:480`),
@@ -267,3 +277,32 @@ These confirm and frame the pre-measured gaps; not re-measured exhaustively.
 > all genuine specifications of intended behavior and would catch real regressions. The journal is
 > immutable **by construction** (no edit/delete function exists — only post + reverse), which is the
 > strongest possible form of the D13 guarantee.
+
+---
+
+## 5. Concerns found during triage (deferred — to fix after the audit pass)
+
+These are real issues uncovered while strengthening tests. Per the owner's rule, they were
+**written down and skipped** (no reflexive code fix) so the suite stays green. Revisit one by one.
+
+### C1 — Reversed entries are NOT netted out of `category_txns` (real bug, found via F5)
+- **file:line:** `src/report/report.c` (`mb_report_category_txns`, `WHERE ... e.status='POSTED'`) +
+  `src/journal/journal.c` (`mb_journal_reverse`).
+- **Symptom:** post an income entry, reverse it → `mb_report_category_txns("INCOME", …)` returns the
+  original at full value (1 row) instead of netting to 0. The Income/Expense drill-down lists and
+  their totals therefore **over-report any reversed (e.g. reopened-and-re-issued) transaction.**
+- **Root cause:** `mb_journal_reverse` posts a `REVERSAL` entry but never flips the *original*
+  entry's status to `REVERSED`. The schema already allows `REVERSED` (`store.c` CHECK) but nothing
+  writes it. `category_txns` filters `status='POSTED'`, so it keeps the still-`POSTED` original and
+  hides only the `REVERSAL`.
+- **Why balance reports are unaffected:** `mb_report_balances` (TB / P&L / Balance Sheet) sums *all*
+  postings regardless of status, so the original + reversal cancel. Confirmed by
+  `report.reversed_entry_nets_out`.
+- **Proposed fix (deferred):** in `mb_journal_reverse`, also `UPDATE journal_entry SET status='REVERSED'
+  WHERE id=<original>`. Then `category_txns` excludes both legs and nets to 0. Re-enable the commented
+  `ASSERT_EQ_INT(n, 0)` in `report.reversed_entry_nets_out`, and add a journal-view check that the
+  original now reads `REVERSED` (the journal should still list it — it filters nothing by status).
+  Verify the invoice "reopen to edit" flow end-to-end (issue → reopen → re-issue) does not
+  double-count income afterward.
+- **Severity:** **HIGH** (silent financial over-statement in a user-facing report), but **contained**
+  to `category_txns`; the core ledger and balance reports are correct.
