@@ -69,12 +69,15 @@ typedef struct {
 
 mb_err mb_invoice_lines(mb_store *s, const char *invoice_id, mb_invoice_line **rows, int *n) MB_MUST_CHECK;
 
-/* Editing (D13 — editable until paid). All require the invoice to be a DRAFT, except
- * mb_invoice_revert_to_draft which takes an OPEN (unpaid) invoice and reopens it for editing by
- * posting a reversing entry (the journal stays immutable). */
+/* Editing (D13 — a document is editable only while DRAFT). Once issued it is locked; corrections
+ * are made with new documents (a credit note / next invoice) or by voiding. */
 mb_err mb_invoice_remove_line(mb_store *s, const char *line_id) MB_MUST_CHECK;
 mb_err mb_invoice_update(mb_store *s, const char *id, const char *number,
                          const char *due_date, const char *memo) MB_MUST_CHECK;
-mb_err mb_invoice_revert_to_draft(mb_store *s, const char *id) MB_MUST_CHECK;
+
+/* Void an issued, UNPAID (OPEN) invoice: posts a reversing entry that cancels AR + income, marks the
+ * document VOID, and drops it from AR aging. Rejected for DRAFT (not issued) and PARTIAL/PAID
+ * (has cash applied — use a refund or credit note instead). */
+mb_err mb_invoice_void(mb_store *s, const char *id) MB_MUST_CHECK;
 
 #endif /* MB_INVOICE_H */

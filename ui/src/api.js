@@ -79,7 +79,7 @@ function mock(method, args) {
     case 'invoice.add_line': case 'bill.add_line': return { line_id: 'line-new' }
     case 'invoice.issue': case 'bill.enter': return { ok: true }
     case 'invoice.update': case 'bill.update': case 'invoice.remove_line': case 'bill.remove_line':
-    case 'invoice.revert': case 'bill.revert': return { ok: true }
+    case 'invoice.void': case 'bill.void': return { ok: true }
     case 'payment.record': return { id: 'pay-new' }
     case 'credit.apply': return { id: 'alloc-new' }
     case 'counterparty.balance':

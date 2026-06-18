@@ -499,8 +499,8 @@ static mb_err h_invoice_update(mb_store *s, const cJSON *a, cJSON **res) {
   cJSON_AddBoolToObject(*res, "ok", 1);
   return MB_OK;
 }
-static mb_err h_invoice_revert(mb_store *s, const cJSON *a, cJSON **res) {
-  MB_TRY(mb_invoice_revert_to_draft(s, jstr(a, "id")));
+static mb_err h_invoice_void(mb_store *s, const cJSON *a, cJSON **res) {
+  MB_TRY(mb_invoice_void(s, jstr(a, "id")));
   *res = cJSON_CreateObject();
   cJSON_AddBoolToObject(*res, "ok", 1);
   return MB_OK;
@@ -517,8 +517,8 @@ static mb_err h_bill_update(mb_store *s, const cJSON *a, cJSON **res) {
   cJSON_AddBoolToObject(*res, "ok", 1);
   return MB_OK;
 }
-static mb_err h_bill_revert(mb_store *s, const cJSON *a, cJSON **res) {
-  MB_TRY(mb_bill_revert_to_draft(s, jstr(a, "id")));
+static mb_err h_bill_void(mb_store *s, const cJSON *a, cJSON **res) {
+  MB_TRY(mb_bill_void(s, jstr(a, "id")));
   *res = cJSON_CreateObject();
   cJSON_AddBoolToObject(*res, "ok", 1);
   return MB_OK;
@@ -844,14 +844,14 @@ mb_err mb_api_dispatch(mb_store *s, const char *method, const char *args_json, c
   else if (!strcmp(method, "invoice.get"))         e = h_invoice_get(s, args, &res);
   else if (!strcmp(method, "invoice.remove_line")) e = h_invoice_remove_line(s, args, &res);
   else if (!strcmp(method, "invoice.update"))      e = h_invoice_update(s, args, &res);
-  else if (!strcmp(method, "invoice.revert"))      e = h_invoice_revert(s, args, &res);
+  else if (!strcmp(method, "invoice.void"))        e = h_invoice_void(s, args, &res);
   else if (!strcmp(method, "bill.create"))         e = h_bill_create(s, args, &res);
   else if (!strcmp(method, "bill.add_line"))       e = h_bill_add_line(s, args, &res);
   else if (!strcmp(method, "bill.enter"))          e = h_bill_enter(s, args, &res);
   else if (!strcmp(method, "bill.get"))            e = h_bill_get(s, args, &res);
   else if (!strcmp(method, "bill.remove_line"))    e = h_bill_remove_line(s, args, &res);
   else if (!strcmp(method, "bill.update"))         e = h_bill_update(s, args, &res);
-  else if (!strcmp(method, "bill.revert"))         e = h_bill_revert(s, args, &res);
+  else if (!strcmp(method, "bill.void"))           e = h_bill_void(s, args, &res);
   else if (!strcmp(method, "bill.list"))           e = h_bill_list(s, args, &res);
   else if (!strcmp(method, "invoice.list"))        e = h_invoice_list(s, args, &res);
   else if (!strcmp(method, "payment.record"))      e = h_payment_record(s, args, &res);

@@ -319,6 +319,14 @@ These confirm and frame the pre-measured gaps; not re-measured exhaustively.
 These are real issues uncovered while strengthening tests. Per the owner's rule, they were
 **written down and skipped** (no reflexive code fix) so the suite stays green. Revisit one by one.
 
+> **RESOLVED (2026-06-17).** `mb_journal_reverse` now flips the original entry to `status='REVERSED'`
+> (postings stay immutable; the flag isn't part of the content hash, so the chain is intact). The
+> `report.reversed_entry_nets_out` netting assertion (`ASSERT_EQ_INT(n, 0)`) is re-enabled and passes,
+> and a journal-view check confirms the original reads `REVERSED`. Done as part of the invoice/bill
+> **lifecycle change**: reopen-to-draft was removed (documents lock at issue) and a **Void** action
+> added (`mb_invoice_void`/`mb_bill_void` → reverse + status `VOID`, drops from aging), which is the
+> one place the C1 fix was a prerequisite. 90 tests, 0 leaks.
+
 ### C1 — Reversed entries are NOT netted out of `category_txns` (real bug, found via F5)
 - **file:line:** `src/report/report.c` (`mb_report_category_txns`, `WHERE ... e.status='POSTED'`) +
   `src/journal/journal.c` (`mb_journal_reverse`).

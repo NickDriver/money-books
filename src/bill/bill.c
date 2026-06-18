@@ -360,18 +360,23 @@ mb_err mb_bill_update(mb_store *s, const char *id, const char *number,
   return e;
 }
 
-mb_err mb_bill_revert_to_draft(mb_store *s, const char *id) {
+mb_err mb_bill_void(mb_store *s, const char *id) {
   mb_bill b;
   MB_TRY(mb_bill_get(s, id, &b));
+  if (b.status == MB_BILL_DRAFT)
+    return MB_FAIL(MB_ERR_INVALID_ARG, "a draft bill is not entered — edit or discard it instead");
+  if (b.status == MB_BILL_VOID)
+    return MB_FAIL(MB_ERR_INVALID_ARG, "bill is already void");
   if (b.status != MB_BILL_OPEN)
-    return MB_FAIL(MB_ERR_INVALID_ARG, "only an OPEN (unpaid) bill can be reopened for editing");
+    return MB_FAIL(MB_ERR_INVALID_ARG, "a paid or partly-paid bill cannot be voided — issue a refund or credit note");
   if (!b.entry_id[0]) return MB_FAIL(MB_ERR_INTERNAL, "entered bill has no journal entry");
+
+  /* Reverse the entry (cancels AP + expense; flags the original REVERSED), then mark VOID. */
   char rev[40];
   MB_TRY(mb_journal_reverse(s, b.entry_id, rev));
   sqlite3_stmt *st;
   if (sqlite3_prepare_v2(mb_store_handle(s),
-        "UPDATE bill SET status='DRAFT', issue_date=NULL, entry_id=NULL WHERE id=?;",
-        -1, &st, NULL) != SQLITE_OK)
+        "UPDATE bill SET status='VOID' WHERE id=?;", -1, &st, NULL) != SQLITE_OK)
     return MB_FAIL(MB_ERR_DB, "%s", sqlite3_errmsg(mb_store_handle(s)));
   sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
   mb_err e = (sqlite3_step(st) == SQLITE_DONE) ? MB_OK : MB_FAIL(MB_ERR_DB, "%s", sqlite3_errmsg(mb_store_handle(s)));
@@ -385,6 +390,7 @@ mb_err mb_bill_revert_to_draft(mb_store *s, const char *id) {
 #include "../counterparty/counterparty.h"
 #include "../journal/journal.h"
 #include "../payment/payment.h"
+#include "../report/report.h"
 #include "../seed/seed.h"
 
 TEST(bill, enter_posts_expense_and_ap) {
@@ -440,7 +446,7 @@ TEST(bill, list_carries_vendor_status_total) {
   mb_store_close(s);
 }
 
-/* ---- bill edit/revert/lock family — mirror of the invoice tests (audit F3) ---- */
+/* ---- bill edit/lock/void family — mirror of the invoice tests (audit F3) ---- */
 
 /* set up a seeded book with one expense category + one vendor */
 static void bill_setup(mb_test *t, mb_store *s, char expense[40], char vendor[40]) {
@@ -478,10 +484,9 @@ TEST(bill, enter_empty_fails) {
   mb_store_close(s);
 }
 
-/* edit a DRAFT (remove_line + lines + update), enter (AP credited), reopen (reverse → AP nets to
- * zero per vendor), re-edit and re-enter — the AP twin of invoice.edit_draft_lines_and_reopen_open.
- * This is the path the audit flagged as entirely unproven on the bill side. */
-TEST(bill, edit_draft_lines_and_reopen_open) {
+/* edit a DRAFT (remove_line + lines + update), enter (AP credited + locked), then void (reverse →
+ * AP nets to zero per vendor). The AP twin of the invoice edit/lock/void tests. */
+TEST(bill, edit_draft_then_lock_and_void) {
   mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
   char expense[40], vendor[40]; bill_setup(t, s, expense, vendor);
   char ap[40]; ASSERT_OK(mb_store_meta_get(s, "ap_account_id", ap, sizeof ap));
@@ -503,29 +508,27 @@ TEST(bill, edit_draft_lines_and_reopen_open) {
   free(lines);
   ASSERT_OK(mb_bill_update(s, bill, "B-1b", "2026-08-01", "edited"));
 
-  /* enter → OPEN, AP credited (credit-normal control → negative debit-sum) */
+  /* enter → OPEN, AP credited (credit-normal control → negative debit-sum), then locked */
   ASSERT_OK(mb_bill_enter(s, bill, "2026-07-01"));
   mb_money bal; ASSERT_OK(mb_account_balance(s, ap, &bal)); ASSERT_MONEY_EQ(bal, -10000);
   mb_money vbal; ASSERT_OK(mb_counterparty_balance(s, vendor, MB_PAY_BILL, &vbal));
   ASSERT_MONEY_EQ(vbal, -10000);   /* we owe the vendor $100 */
+  ASSERT_ERR(mb_bill_remove_line(s, l1), MB_ERR_INVALID_ARG);
+  ASSERT_ERR(mb_bill_update(s, bill, "X", NULL, NULL), MB_ERR_INVALID_ARG);
 
-  /* reopen an OPEN bill → reversing entry cancels the posting, status back to DRAFT, AP nets to 0 */
-  ASSERT_OK(mb_bill_revert_to_draft(s, bill));
+  /* void the OPEN bill → reversing entry cancels AP, status VOID, AP nets to zero per vendor */
+  ASSERT_OK(mb_bill_void(s, bill));
   mb_bill got; ASSERT_OK(mb_bill_get(s, bill, &got));
-  ASSERT_EQ_INT(got.status, MB_BILL_DRAFT);
-  ASSERT_OK(mb_account_balance(s, ap, &bal)); ASSERT_MONEY_EQ(bal, 0);          /* edit-on-top: net zero */
+  ASSERT_EQ_INT(got.status, MB_BILL_VOID);
+  ASSERT_OK(mb_account_balance(s, ap, &bal)); ASSERT_MONEY_EQ(bal, 0);
   ASSERT_OK(mb_counterparty_balance(s, vendor, MB_PAY_BILL, &vbal));
   ASSERT_MONEY_EQ(vbal, 0);   /* reversal preserved the vendor tag, so per-vendor AP nets to zero too */
+  mb_aging ag; ASSERT_OK(mb_report_ap_aging(s, "2026-12-31", &ag)); ASSERT_MONEY_EQ(ag.total, 0);
 
-  /* can edit again (DRAFT), then re-enter */
-  ASSERT_OK(mb_bill_remove_line(s, l1));
-  mb_bill_line_in c = {.description="C", .qty_centi=100, .unit_price=30000, .account_id=expense};
-  char l3[40]; ASSERT_OK(mb_bill_add_line(s, bill, &c, l3));
-  ASSERT_OK(mb_bill_enter(s, bill, "2026-07-02"));
-  ASSERT_OK(mb_account_balance(s, ap, &bal)); ASSERT_MONEY_EQ(bal, -30000);
-
-  /* once entered again, a DRAFT line edit is blocked */
-  ASSERT_ERR(mb_bill_remove_line(s, l3), MB_ERR_INVALID_ARG);
+  /* terminal: cannot void again, and a draft cannot be voided */
+  ASSERT_ERR(mb_bill_void(s, bill), MB_ERR_INVALID_ARG);
+  char d[40]; ASSERT_OK(mb_bill_create(s, vendor, NULL, NULL, NULL, d));
+  ASSERT_ERR(mb_bill_void(s, d), MB_ERR_INVALID_ARG);
   mb_store_close(s);
 }
 #endif

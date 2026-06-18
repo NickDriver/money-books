@@ -592,15 +592,17 @@ TEST(report, reversed_entry_nets_out) {
   ASSERT_TRUE(tb.balanced);
   free(tbr);
 
-  /* the effective category list must NOT show the reversed income.
-   * KNOWN BUG (audit Concern C1, deferred): mb_journal_reverse never flips the ORIGINAL entry's
-   * status to 'REVERSED', so category_txns (which filters status='POSTED') still shows the original
-   * at full value while hiding the REVERSAL — it returns 1 row here, should be 0. The correct
-   * assertion is left commented until the fix lands (flip the original to 'REVERSED' on reverse).
-   * Balance reports are unaffected (they sum all postings), as the assertions above prove. */
+  /* the original entry is now flagged REVERSED (the postings stay; only the lifecycle flag changes) */
+  ASSERT_OK(mb_report_journal(s, NULL, NULL, &jr, &jn));
+  int saw_reversed = 0;
+  for (int i = 0; i < jn; i++) if (!strcmp(jr[i].status, "REVERSED")) saw_reversed = 1;
+  ASSERT_TRUE(saw_reversed);
+  free(jr);
+
+  /* the effective category list nets the reversed income out entirely (Concern C1 — fixed) */
   mb_cat_txn_row *rows = NULL; int n = 0;
   ASSERT_OK(mb_report_category_txns(s, "INCOME", NULL, NULL, &rows, &n));
-  /* ASSERT_EQ_INT(n, 0);  // <-- enable once Concern C1 is fixed */
+  ASSERT_EQ_INT(n, 0);
   free(rows);
   mb_store_close(s);
 }

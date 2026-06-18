@@ -199,14 +199,17 @@ allocation but posts **no cash and no journal entry** (the AR/AP already reflect
 Invariants: `AR(cp) = docs_outstanding(cp) − available_credit(cp)`; the books always balance (Σ
 postings = 0). Aging (`ar_aging`/`ap_aging`) measures outstanding as total − Σ allocations.
 
-**Edit model (D13 — immutable + edit on top).** An invoice/bill is **editable until it is
-paid/closed**:
+**Edit model (D13 — a document is editable only while DRAFT; corrections via new documents).** An
+issued invoice/bill is a sent business document, so it is **immutable once issued** — you don't edit
+it, you correct it with another document:
 - **DRAFT** — fully editable (add/remove lines, change number/due date/memo); posts nothing.
-- **OPEN** (issued, no payments yet) — **reopen to edit**: posts a *reversing* journal entry that
-  cancels the issue posting (the journal stays append-only/immutable), reverts the doc to DRAFT,
-  then the user edits and re-issues (a fresh posting). Net effect = "edit on top".
-- **PARTIAL / PAID / VOID** — **locked** (a payment has been applied, or it's been voided); corrections
-  require unapplying the payment or a manual reversal. The detail view hides the edit affordance.
+- **OPEN / PARTIAL / PAID** — **locked**. The detail view hides the edit affordance.
+- **Void** (`invoice.void` / `bill.void`) — an issued **OPEN (unpaid)** document can be cancelled: it
+  posts a *reversing* journal entry that cancels AR/AP + income/expense, flags the original entry
+  `REVERSED` (so status-filtered effective reports net it out), marks the document `VOID`, and drops
+  it from aging. A **PARTIAL/PAID** document cannot be voided (cash has been applied) — correct it
+  with a **refund**, a **credit note / discount on the next document**, or **customer/vendor credit**
+  (D26). A DRAFT is not voided (it was never issued) — edit or discard it.
 
 ### 4.4 Local-only / non-synced tables
 
@@ -286,7 +289,8 @@ All reports support **date-range and account/category filtering**.
 - **Sidebar agent:** chat panel; shows the model's proposed tool calls and **Ask** approvals inline.
 - Screens: Dashboard · Transactions · Invoices · Bills · Accounts & Categories · Items · Reports · Settings.
 - **Detail views:** clicking an invoice/bill row opens a **detail view** (header + counterparty +
-  line items + total + status + an Edit/Reopen affordance per the edit model above). Clicking a
+  line items + total + status + an Edit (DRAFT) / Void (issued, unpaid) affordance per the edit
+  model above). Clicking a
   Dashboard Income/Expenses card opens the matching `category_transactions` list; the **Transactions**
   screen shows all journal entries (`transactions` view) with All/Income/Expense filters. Clicking an
   account in **Accounts & Categories** opens its **`general_ledger`** (Debit/Credit columns + running
@@ -401,8 +405,8 @@ Tool-use loop over libcurl (+ SSE streaming). Tools = the MCP tool surface, gate
 - **Phase 4 — UI (DONE, 2026-06-17):** JSON API bridge (`src/api`, `mb_api_dispatch` — shared
   with MCP), React/Vite front-end (`ui/`), native WKWebView shell (`src/app/main.c`, `make app`).
   Done: **Record** income/expense form; **Invoices & Bills** tab (list → **detail view** → edit;
-  create draft with line items → issue/enter; record payments; **edit-until-paid** via reopen/reverse,
-  D13); **Transactions** tab (All journal w/ Income/Expense/Transfer type + accounting-style amounts;
+  create draft with line items → issue/enter; record payments; **edit-while-draft, lock-on-issue,
+  Void to cancel** (D13); **Transactions** tab (All journal w/ Income/Expense/Transfer type + accounting-style amounts;
   Income/Expense category lists; dashboard cards drill in); **per-account General Ledger** (Dr/Cr +
   running balance, off the Accounts list); **first-run wizard** (D7); **dashboard widget
   customization** (Cash position hero); **multi-company** (D25: registry + launcher + ⇄ switch).

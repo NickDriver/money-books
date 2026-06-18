@@ -209,6 +209,21 @@ mb_err mb_journal_reverse(mb_store *s, const char *entry_id, char reversal_id_ou
   mb_err e = mb_store_begin(s);
   if (e == MB_OK) {
     e = post_core(s, date, memo, MB_SRC_USER, "REVERSAL", entry_id, ps, n, reversal_id_out);
+    /* Mark the original cancelled so status-filtered effective views (e.g. category_txns) exclude
+     * it. Postings stay immutable; only this lifecycle flag changes, and it is not part of the
+     * content hash, so the tamper-evident chain is unaffected. */
+    if (e == MB_OK) {
+      sqlite3_stmt *u;
+      if (sqlite3_prepare_v2(mb_store_handle(s),
+            "UPDATE journal_entry SET status='REVERSED' WHERE id=?;", -1, &u, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(u, 1, entry_id, -1, SQLITE_TRANSIENT);
+        e = (sqlite3_step(u) == SQLITE_DONE) ? MB_OK
+            : MB_FAIL(MB_ERR_DB, "mark reversed: %s", sqlite3_errmsg(mb_store_handle(s)));
+        sqlite3_finalize(u);
+      } else {
+        e = MB_FAIL(MB_ERR_DB, "%s", sqlite3_errmsg(mb_store_handle(s)));
+      }
+    }
     if (e != MB_OK) mb_store_rollback(s); else e = mb_store_commit(s);
   }
   free(ps);

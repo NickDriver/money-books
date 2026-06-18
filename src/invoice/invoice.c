@@ -374,20 +374,26 @@ mb_err mb_invoice_update(mb_store *s, const char *id, const char *number,
   return e;
 }
 
-mb_err mb_invoice_revert_to_draft(mb_store *s, const char *id) {
+mb_err mb_invoice_void(mb_store *s, const char *id) {
   mb_invoice inv;
   MB_TRY(mb_invoice_get(s, id, &inv));
+  /* Only an issued, unpaid invoice can be voided. A DRAFT was never posted; a PARTIAL/PAID one has
+   * cash applied — correct those with a refund or a credit note, not a void. */
+  if (inv.status == MB_INV_DRAFT)
+    return MB_FAIL(MB_ERR_INVALID_ARG, "a draft invoice is not issued — edit or discard it instead");
+  if (inv.status == MB_INV_VOID)
+    return MB_FAIL(MB_ERR_INVALID_ARG, "invoice is already void");
   if (inv.status != MB_INV_OPEN)
-    return MB_FAIL(MB_ERR_INVALID_ARG, "only an OPEN (unpaid) invoice can be reopened for editing");
+    return MB_FAIL(MB_ERR_INVALID_ARG, "a paid or partly-paid invoice cannot be voided — issue a refund or credit note");
   if (!inv.entry_id[0]) return MB_FAIL(MB_ERR_INTERNAL, "issued invoice has no journal entry");
 
-  /* Reverse the issue posting (its own transaction), then drop back to DRAFT. */
+  /* Reverse the issue posting (cancels AR + income; the reversal flags the original REVERSED),
+   * then mark the document VOID — it leaves AR aging and the effective reports. */
   char rev[40];
   MB_TRY(mb_journal_reverse(s, inv.entry_id, rev));
   sqlite3_stmt *st;
   if (sqlite3_prepare_v2(mb_store_handle(s),
-        "UPDATE invoice SET status='DRAFT', issue_date=NULL, entry_id=NULL WHERE id=?;",
-        -1, &st, NULL) != SQLITE_OK)
+        "UPDATE invoice SET status='VOID' WHERE id=?;", -1, &st, NULL) != SQLITE_OK)
     return MB_FAIL(MB_ERR_DB, "%s", sqlite3_errmsg(mb_store_handle(s)));
   sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
   mb_err e = (sqlite3_step(st) == SQLITE_DONE) ? MB_OK : MB_FAIL(MB_ERR_DB, "%s", sqlite3_errmsg(mb_store_handle(s)));
@@ -399,6 +405,8 @@ mb_err mb_invoice_revert_to_draft(mb_store *s, const char *id) {
 #include "../support/mb_test.h"
 #include "../account/account.h"
 #include "../counterparty/counterparty.h"
+#include "../payment/payment.h"
+#include "../report/report.h"
 #include "../seed/seed.h"
 
 TEST(invoice, draft_then_issue_posts) {
@@ -511,7 +519,7 @@ TEST(invoice, list_carries_name_status_total) {
   mb_store_close(s);
 }
 
-TEST(invoice, edit_draft_lines_and_reopen_open) {
+TEST(invoice, edit_draft_then_lock_on_issue) {
   mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
   ASSERT_OK(mb_seed_system_accounts(s));
   char income[40];
@@ -526,7 +534,7 @@ TEST(invoice, edit_draft_lines_and_reopen_open) {
   ASSERT_OK(mb_invoice_add_line(s, inv, &a, l1));
   ASSERT_OK(mb_invoice_add_line(s, inv, &b, l2));
 
-  /* edit a DRAFT: remove a line + update header */
+  /* edit a DRAFT freely: remove a line, read lines back, update header */
   ASSERT_OK(mb_invoice_remove_line(s, l2));
   mb_invoice_line *lines = NULL; int ln = 0;
   ASSERT_OK(mb_invoice_lines(s, inv, &lines, &ln));
@@ -536,26 +544,65 @@ TEST(invoice, edit_draft_lines_and_reopen_open) {
   free(lines);
   ASSERT_OK(mb_invoice_update(s, inv, "INV-1b", "2026-08-01", "edited"));
 
-  /* issue → OPEN, AR debited */
+  /* issue → OPEN, AR debited, and now permanently locked (no reopen in the lifecycle) */
   ASSERT_OK(mb_invoice_issue(s, inv, "2026-07-01"));
   char ar[40]; ASSERT_OK(mb_store_meta_get(s, "ar_account_id", ar, sizeof ar));
   mb_money bal; ASSERT_OK(mb_account_balance(s, ar, &bal)); ASSERT_MONEY_EQ(bal, 10000);
+  ASSERT_ERR(mb_invoice_remove_line(s, l1), MB_ERR_INVALID_ARG);
+  ASSERT_ERR(mb_invoice_add_line(s, inv, &a, l2), MB_ERR_INVALID_ARG);
+  ASSERT_ERR(mb_invoice_update(s, inv, "X", NULL, NULL), MB_ERR_INVALID_ARG);
+  ASSERT_ERR(mb_invoice_issue(s, inv, "2026-07-02"), MB_ERR_INVALID_ARG);
+  mb_store_close(s);
+}
 
-  /* reopen an OPEN invoice → reversing entry cancels the posting, status back to DRAFT */
-  ASSERT_OK(mb_invoice_revert_to_draft(s, inv));
+/* Voiding an issued, unpaid invoice reverses its posting, marks it VOID, and removes it from AR +
+ * aging + the effective income reports. DRAFT and paid/partial invoices cannot be voided. */
+TEST(invoice, void_reverses_and_locks) {
+  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
+  ASSERT_OK(mb_seed_system_accounts(s));
+  char income[40], bank[40];
+  mb_account_new acc = {.code="4000", .name="Income", .type=MB_ACCT_INCOME, .role=MB_ROLE_CATEGORY};
+  mb_account_new ab  = {.code="1000", .name="Bank",   .type=MB_ACCT_ASSET,  .role=MB_ROLE_ACCOUNT};
+  ASSERT_OK(mb_account_create(s, &acc, income));
+  ASSERT_OK(mb_account_create(s, &ab, bank));
+  char cp[40]; mb_counterparty_new cpn = {.name="C", .kind=MB_CP_CUSTOMER};
+  ASSERT_OK(mb_counterparty_create(s, &cpn, cp));
+  char ar[40]; ASSERT_OK(mb_store_meta_get(s, "ar_account_id", ar, sizeof ar));
+
+  /* a DRAFT cannot be voided (it was never issued) */
+  char d[40]; ASSERT_OK(mb_invoice_create(s, cp, NULL, NULL, NULL, d));
+  ASSERT_ERR(mb_invoice_void(s, d), MB_ERR_INVALID_ARG);
+
+  /* issue a $100 invoice, then void it */
+  char inv[40]; ASSERT_OK(mb_invoice_create(s, cp, "INV-1", NULL, NULL, inv));
+  char lid[40];
+  mb_invoice_line_in l = {.description="Work", .qty_centi=100, .unit_price=10000, .account_id=income};
+  ASSERT_OK(mb_invoice_add_line(s, inv, &l, lid));
+  ASSERT_OK(mb_invoice_issue(s, inv, "2026-07-01"));
+  mb_money bal; ASSERT_OK(mb_account_balance(s, ar, &bal)); ASSERT_MONEY_EQ(bal, 10000);
+
+  ASSERT_OK(mb_invoice_void(s, inv));
   mb_invoice got; ASSERT_OK(mb_invoice_get(s, inv, &got));
-  ASSERT_EQ_INT(got.status, MB_INV_DRAFT);
-  ASSERT_OK(mb_account_balance(s, ar, &bal)); ASSERT_MONEY_EQ(bal, 0);   /* edit-on-top: net zero */
+  ASSERT_EQ_INT(got.status, MB_INV_VOID);
+  ASSERT_OK(mb_account_balance(s, ar, &bal)); ASSERT_MONEY_EQ(bal, 0);   /* AR cancelled */
+  /* dropped from aging and effective income */
+  mb_aging ag; ASSERT_OK(mb_report_ar_aging(s, "2026-12-31", &ag)); ASSERT_MONEY_EQ(ag.total, 0);
+  mb_cat_txn_row *rows = NULL; int n = 0;
+  ASSERT_OK(mb_report_category_txns(s, "INCOME", NULL, NULL, &rows, &n));
+  ASSERT_EQ_INT(n, 0);
+  free(rows);
 
-  /* can edit again (DRAFT), then re-issue */
-  ASSERT_OK(mb_invoice_remove_line(s, l1));
-  mb_invoice_line_in c = {.description="C", .qty_centi=100, .unit_price=30000, .account_id=income};
-  char l3[40]; ASSERT_OK(mb_invoice_add_line(s, inv, &c, l3));
-  ASSERT_OK(mb_invoice_issue(s, inv, "2026-07-02"));
-  ASSERT_OK(mb_account_balance(s, ar, &bal)); ASSERT_MONEY_EQ(bal, 30000);
+  /* a void is terminal: cannot void again, cannot be paid */
+  ASSERT_ERR(mb_invoice_void(s, inv), MB_ERR_INVALID_ARG);
+  char pid[40];
+  ASSERT_ERR(mb_payment_record(s, "2026-07-05", 10000, bank, MB_PAY_INVOICE, inv, pid), MB_ERR_INVALID_ARG);
 
-  /* a paid/partial invoice cannot be reopened, and a DRAFT line edit is blocked once issued */
-  ASSERT_ERR(mb_invoice_remove_line(s, l3), MB_ERR_INVALID_ARG);
+  /* a paid invoice cannot be voided — use a refund/credit note */
+  char inv2[40]; ASSERT_OK(mb_invoice_create(s, cp, "INV-2", NULL, NULL, inv2));
+  ASSERT_OK(mb_invoice_add_line(s, inv2, &l, lid));
+  ASSERT_OK(mb_invoice_issue(s, inv2, "2026-07-01"));
+  ASSERT_OK(mb_payment_record(s, "2026-07-02", 10000, bank, MB_PAY_INVOICE, inv2, pid));  /* → PAID */
+  ASSERT_ERR(mb_invoice_void(s, inv2), MB_ERR_INVALID_ARG);
   mb_store_close(s);
 }
 #endif

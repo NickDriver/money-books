@@ -14,7 +14,7 @@ const KIND = {
     listMethod: 'invoice.list', listKey: 'invoices',
     get: 'invoice.get', idArg: 'invoice_id',
     create: 'invoice.create', addLine: 'invoice.add_line', removeLine: 'invoice.remove_line',
-    update: 'invoice.update', post: 'invoice.issue', revert: 'invoice.revert',
+    update: 'invoice.update', post: 'invoice.issue', void: 'invoice.void',
     postVerb: 'Issue', postedLabel: 'issued', payTarget: 'INVOICE',
   },
   bill: {
@@ -23,7 +23,7 @@ const KIND = {
     listMethod: 'bill.list', listKey: 'bills',
     get: 'bill.get', idArg: 'bill_id',
     create: 'bill.create', addLine: 'bill.add_line', removeLine: 'bill.remove_line',
-    update: 'bill.update', post: 'bill.enter', revert: 'bill.revert',
+    update: 'bill.update', post: 'bill.enter', void: 'bill.void',
     postVerb: 'Enter', postedLabel: 'entered', payTarget: 'BILL',
   },
 }
@@ -105,6 +105,7 @@ function Detail({ k, id, accounts, counterparties, items, onCounterparties, onBa
   const [editing, setEditing] = useState(false)
   const [paying, setPaying] = useState(false)
   const [applying, setApplying] = useState(false)
+  const [confirmVoid, setConfirmVoid] = useState(false)
   const [credit, setCredit] = useState(0)
   const [err, setErr] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -134,9 +135,9 @@ function Detail({ k, id, accounts, counterparties, items, onCounterparties, onBa
       onDone={() => { setEditing(false); load() }} onCancel={() => setEditing(false)} />
   }
 
-  async function reopen() {
+  async function voidDoc() {
     setBusy(true); setErr(null)
-    try { await invoke(k.revert, { id }); setEditing(true) }
+    try { await invoke(k.void, { id }); setConfirmVoid(false); setBusy(false); load() }
     catch (e) { setErr(String(e)); setBusy(false) }
   }
 
@@ -178,16 +179,25 @@ function Detail({ k, id, accounts, counterparties, items, onCounterparties, onBa
         </p>
       )}
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap', alignItems: 'center' }}>
         {isDraft && <button className="btn-save filled" onClick={() => setEditing(true)}>Edit</button>}
-        {isOpen && <button className="btn-outline" disabled={busy} onClick={reopen}>Reopen to edit</button>}
         {payable && <button className="btn-save filled" onClick={() => setPaying(true)}>Record payment</button>}
         {payable && credit > 0 && <button className="btn-outline" onClick={() => setApplying(true)}>Apply credit</button>}
+        {isOpen && !confirmVoid && <button className="btn-outline" onClick={() => setConfirmVoid(true)}>Void</button>}
+        {isOpen && confirmVoid && (
+          <>
+            <span className="muted" style={{ fontSize: 13 }}>Void this {k.noun}?</span>
+            <button className="btn-outline neg" disabled={busy} onClick={voidDoc}>Yes, void</button>
+            <button className="btn-outline" disabled={busy} onClick={() => setConfirmVoid(false)}>Cancel</button>
+          </>
+        )}
       </div>
+      {isDraft && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+        Edit freely while it's a draft. Once {k.postVerb.toLowerCase()}d it locks — corrections are made with a new {k.noun} or by voiding.</p>}
       {isOpen && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-        Reopening posts a reversing entry and returns this {k.noun} to draft so you can edit it, then re-{k.postVerb.toLowerCase()} it.</p>}
-      {!isDraft && !isOpen && !payable && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-        This {k.noun} is {doc.status.toLowerCase()} and locked. Corrections require unapplying its payment.</p>}
+        Issued and locked. To cancel it entirely, Void posts a reversing entry and removes it from {k.payTarget === 'BILL' ? 'AP' : 'AR'}.</p>}
+      {!isDraft && !isOpen && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+        This {k.noun} is {doc.status.toLowerCase()} and locked. For an over/under-charge, use {k.who.toLowerCase()} credit, a refund, or a new {k.noun}.</p>}
       {err && <p className="neg">{err}</p>}
 
       {paying && (

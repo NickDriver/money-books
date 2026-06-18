@@ -68,11 +68,14 @@ typedef struct {
 
 mb_err mb_bill_lines(mb_store *s, const char *bill_id, mb_bill_line **rows, int *n) MB_MUST_CHECK;
 
-/* Editing (D13 — editable until paid). DRAFT only, except mb_bill_revert_to_draft which reopens an
- * OPEN (unpaid) bill by posting a reversing entry. */
+/* Editing (D13 — editable only while DRAFT). Once entered it is locked; correct with new documents
+ * or by voiding. */
 mb_err mb_bill_remove_line(mb_store *s, const char *line_id) MB_MUST_CHECK;
 mb_err mb_bill_update(mb_store *s, const char *id, const char *number,
                       const char *due_date, const char *memo) MB_MUST_CHECK;
-mb_err mb_bill_revert_to_draft(mb_store *s, const char *id) MB_MUST_CHECK;
+
+/* Void an entered, UNPAID (OPEN) bill: reverses AP + expense, marks the document VOID, drops it from
+ * AP aging. Rejected for DRAFT and PARTIAL/PAID. */
+mb_err mb_bill_void(mb_store *s, const char *id) MB_MUST_CHECK;
 
 #endif /* MB_BILL_H */

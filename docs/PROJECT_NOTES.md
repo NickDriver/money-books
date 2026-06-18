@@ -61,19 +61,17 @@ proper bookkeeping fundamentals.
 ## 4. Decision Log (confirmed)
 
 > **▶ RESUME HERE (last session 2026-06-17).** **Phases 0–4 COMPLETE + multi-company (D25) + customer/
-> vendor credit (D26); Phase 5 core done.** `make test` = **82/82 green, 0 leaks**; `make app` +
-> `make mcp` build clean; the React UI is fully wired (Dashboard, Record, Transactions, Invoices&Bills
-> w/ detail+edit+**Apply credit**, Accounts&Categories w/ editing+ledger, Items, Reports, Assistant,
-> Settings, company launcher). Latest build details are in the dated BUILD STATUS blocks below (newest
-> first).
+> vendor credit (D26) + document lifecycle tightened; Phase 5 core done.** `make test` = **90/90 green,
+> 0 leaks**; `make app` + `make mcp` build clean; published at **github.com/NickDriver/money-books**
+> (public, MIT). The React UI is fully wired (Dashboard, Record, Transactions, Invoices&Bills w/
+> detail+edit+**Apply credit**+**Void**, Accounts&Categories w/ editing+ledger, Items, Reports,
+> Assistant, Settings, company launcher). Latest build details are in the dated BUILD STATUS blocks
+> below (newest first).
 >
-> **In progress — test-suite audit triage (docs/TEST_AUDIT.md).** A critical audit of all tests found
-> 3 HIGH / 6 MED / 4 LOW. **F1 (overpayment) was reclassified as the D26 credit feature and is now
-> DONE** (built + 5 engine tests + 1 API test, balance-forward + manual `credit.apply`). **NEXT in the
-> triage: F2** — `payment.rejects_non_open_and_bad_amount` is mislabeled (never tests a bad amount or
-> the AP side); strengthen it to genuinely exercise `amount<=0` / over-balance on an OPEN doc (do NOT
-> weaken it to match current behavior). Then F3 (bill edit/revert mirror), F5 (reversal in reports),
-> F6 (aging buckets + ap_aging).
+> **Test-suite audit (docs/TEST_AUDIT.md) — COMPLETE.** All findings F1–F11 closed; the one real bug
+> it surfaced (Concern C1 — reversed entries not netted out of `category_txns`) is **fixed**. As part
+> of that, the invoice/bill **lifecycle was tightened**: issued documents are immutable (no more
+> reopen-to-draft); corrections are made with new documents or by **Void**. No open audit findings.
 >
 > **NEXT — Phase 5 polish (planned order, all with tests):**
 > 1. **In-app agent Ask-confirmation UI + per-tool-policy settings screen** — the MCP path already
@@ -87,6 +85,22 @@ proper bookkeeping fundamentals.
 >
 > Then **Phase 6** (packaging: `.app`, signing/notarization, native NSOpenPanel for "open book",
 > shim, CI) and **Phase 7** (P2P/iroh). Open §15 items: attachments, backup/export UX.
+>
+> **BUILD STATUS (2026-06-17): document lifecycle tightened + bug C1 fixed — 90 tests green, 0 leaks.**
+> Refines D13: an issued invoice/bill is now **immutable** — editable only while DRAFT, locked on
+> issue/enter (no more reopen-to-draft). Corrections are made with new documents or by **voiding**.
+> Removed `mb_invoice_revert_to_draft`/`mb_bill_revert_to_draft` (+ `invoice.revert`/`bill.revert` API
+> + the UI "Reopen to edit"). Added `mb_invoice_void`/`mb_bill_void` (+ `invoice.void`/`bill.void` API
+> + a "Void" action with inline confirm on issued-unpaid docs): voiding an **OPEN** doc posts a
+> reversing entry (cancels AR/AP + income/expense), marks the document `VOID`, and drops it from aging;
+> rejected for DRAFT (never issued) and PARTIAL/PAID (cash applied — use refund / credit note / D26
+> credit). **Fixed audit Concern C1:** `mb_journal_reverse` now flips the original entry to
+> `status='REVERSED'` so status-filtered effective reports (`category_txns`) net reversed/voided
+> entries out; postings stay immutable and the flag is outside the content hash, so the tamper-evident
+> chain is unaffected; balance reports were already correct (they sum all postings). Tests reworked:
+> `invoice.edit_draft_then_lock_on_issue` + `invoice.void_reverses_and_locks`, `bill.edit_draft_then_
+> lock_and_void`, and `report.reversed_entry_nets_out` netting assertion re-enabled. **Audit triage
+> F1–F11 + C1 all closed; no open findings.**
 >
 > **BUILD STATUS (2026-06-17): customer/vendor credit (D26) — 82 tests green, 0 leaks.** Resolves
 > audit finding F1 (overpayment was silently accepted but untracked). **Design: AR/AP balance-forward
