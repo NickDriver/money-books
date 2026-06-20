@@ -38,7 +38,7 @@ LDLIBS := -lsqlite3
 
 # Engine = all library sources (no test runner, no app entry, no raw vendor — vendor is
 # compiled via a warning-silenced unity wrapper in src/json/).
-ENGINE_SRC := $(shell find src -name '*.c' -not -path 'src/test/*' -not -path 'src/vendor/*' -not -path 'src/app/*' -not -path 'src/mcpd/*')
+ENGINE_SRC := $(shell find src -name '*.c' -not -path 'src/test/*' -not -path 'src/vendor/*' -not -path 'src/app/*' -not -path 'src/mcpd/*' -not -path 'src/sharedemo/*')
 # Test build = engine + integration tests + the runner, all with -DMB_TEST.
 TEST_SRC   := $(ENGINE_SRC) $(wildcard tests/*.c) $(wildcard src/test/*.c)
 
@@ -114,6 +114,31 @@ app: ui | $(BUILD)
 	clang -std=c11 -DWEBVIEW_STATIC $(INC) -I$(WV)/core/include -O2 $(APP_C) $(BUILD)/webview.o \
 	  $(LDLIBS) -lc++ -framework WebKit -framework Cocoa -o $(BUILD)/MoneyBooks
 	@echo "built $(BUILD)/MoneyBooks  —  run: ./$(BUILD)/MoneyBooks book.sqlite"
+
+# ---- iroh share transport (Phase 7b-2 — the lone Rust dependency) ----
+# Vendor with scripts/fetch_iroh.sh; build the staticlib with `make share-lib`. Only the
+# share build defines MB_WITH_SHARE, so transport_iroh.c is inert in test/mcp/app builds and
+# those stay Rust-free. Native libs come from `cargo rustc -- --print native-static-libs`.
+IROH_DIR    := src/vendor/iroh-c-ffi
+IROH_LIB    := $(IROH_DIR)/target/release/libiroh_c_ffi.a
+IROH_NATIVE := -framework Security -framework SystemConfiguration -framework CoreWLAN \
+               -framework SecurityFoundation -framework Foundation -framework CoreFoundation \
+               -lobjc -liconv
+
+.PHONY: share-lib
+share-lib:
+	@test -d $(IROH_DIR) || { echo ">> run scripts/fetch_iroh.sh first"; exit 1; }
+	cd $(IROH_DIR) && cargo build --release
+	@echo "built $(IROH_LIB)"
+
+# Two-process demo proving real host<->guest QUIC (no UI). See src/sharedemo/main.c.
+.PHONY: share-demo
+share-demo: share-lib | $(BUILD)
+	$(CC) $(STD) $(INC) -I$(IROH_DIR) -O2 -DMB_WITH_SHARE $(ENGINE_SRC) src/sharedemo/main.c \
+	  $(IROH_LIB) $(LDLIBS) $(IROH_NATIVE) -o $(BUILD)/share-demo
+	@echo "built $(BUILD)/share-demo"
+	@echo "  host:  ./$(BUILD)/share-demo host book.sqlite"
+	@echo "  guest: ./$(BUILD)/share-demo guest '<address from host>'"
 
 $(BUILD):
 	@mkdir -p $(BUILD)
