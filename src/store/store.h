@@ -16,6 +16,10 @@ typedef struct mb_store mb_store;
 
 mb_err mb_store_open(const char *path, mb_store **out) MB_MUST_CHECK;
 mb_err mb_store_open_memory(mb_store **out) MB_MUST_CHECK;  /* for tests */
+/* Open an existing book read-only (Phase 7b sharing): a second, independent connection
+ * a guest-serving thread can use while the owner holds the writable handle. WAL gives a
+ * contention-free reader. Never migrates/writes; refuses a book older than this build. */
+mb_err mb_store_open_readonly(const char *path, mb_store **out) MB_MUST_CHECK;
 void   mb_store_close(mb_store *s);
 
 sqlite3 *mb_store_handle(mb_store *s);  /* for modules to prepare statements */

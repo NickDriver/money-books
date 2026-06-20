@@ -342,6 +342,39 @@ static mb_err open_common(const char *path, mb_store **out) {
 mb_err mb_store_open(const char *path, mb_store **out) { return open_common(path, out); }
 mb_err mb_store_open_memory(mb_store **out)            { return open_common(":memory:", out); }
 
+mb_err mb_store_open_readonly(const char *path, mb_store **out) {
+  mb_store *s = calloc(1, sizeof *s);
+  if (!s) return MB_FAIL(MB_ERR_INTERNAL, "oom");
+  if (sqlite3_open_v2(path, &s->db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+    mb_err e = MB_FAIL(MB_ERR_DB, "open '%s' (read-only): %s", path, sqlite3_errmsg(s->db));
+    sqlite3_close(s->db);
+    free(s);
+    return e;
+  }
+  sqlite3_busy_timeout(s->db, 5000);
+  /* query_only is belt-and-suspenders over SQLITE_OPEN_READONLY: the engine never writes
+   * through this handle. We deliberately skip migrate()/init_meta() — both write, and a
+   * guest serves a book the owner already opened (and thus migrated) read-write. */
+  mb_err e = exec_raw(s->db, "PRAGMA foreign_keys=ON; PRAGMA query_only=ON;");
+  if (e == MB_OK) {
+    /* Refuse a book whose schema predates this build: it would need a read-write open to
+     * migrate, which we won't do here. In practice the owner's R/W handle already migrated. */
+    sqlite3_stmt *st;
+    if (sqlite3_prepare_v2(s->db, "PRAGMA user_version;", -1, &st, NULL) != SQLITE_OK) {
+      e = MB_FAIL(MB_ERR_DB, "%s", sqlite3_errmsg(s->db));
+    } else {
+      int version = (sqlite3_step(st) == SQLITE_ROW) ? sqlite3_column_int(st, 0) : 0;
+      sqlite3_finalize(st);
+      if (version < MIGRATION_COUNT)
+        e = MB_FAIL(MB_ERR_DB, "book schema v%d is behind v%d; open it read-write to migrate first",
+                    version, MIGRATION_COUNT);
+    }
+  }
+  if (e != MB_OK) { mb_store_close(s); return e; }
+  *out = s;
+  return MB_OK;
+}
+
 void mb_store_close(mb_store *s) {
   if (!s) return;
   if (s->db) sqlite3_close(s->db);
@@ -350,6 +383,7 @@ void mb_store_close(mb_store *s) {
 
 #ifdef MB_TEST
 #include "../support/mb_test.h"
+#include <unistd.h>   /* unlink */
 
 TEST(store, open_and_meta) {
   mb_store *s = NULL;
@@ -411,5 +445,32 @@ TEST(store, meta_missing_is_not_found) {
   char buf[16];
   ASSERT_ERR(mb_store_meta_get(s, "nope", buf, sizeof buf), MB_ERR_NOT_FOUND);
   mb_store_close(s);
+}
+
+TEST(store, open_readonly) {
+  /* Models the share scenario: the owner keeps the writable handle open while a guest
+   * opens the SAME file read-only (so the live WAL -shm exists, as it will in practice). */
+  const char *path = "/tmp/mb_store_ro_test.sqlite";
+  char wal[80], shm[80];
+  snprintf(wal, sizeof wal, "%s-wal", path);
+  snprintf(shm, sizeof shm, "%s-shm", path);
+  unlink(path); unlink(wal); unlink(shm);
+
+  mb_store *w = NULL;
+  ASSERT_OK(mb_store_open(path, &w));                 /* owner: read-write */
+  char book_w[40];
+  ASSERT_OK(mb_store_book_id(w, book_w));
+
+  mb_store *r = NULL;
+  ASSERT_OK(mb_store_open_readonly(path, &r));        /* guest: read-only, owner still open */
+  char book_r[40];
+  ASSERT_OK(mb_store_book_id(r, book_r));
+  ASSERT_STR_EQ(book_r, book_w);                       /* reads see the same book */
+  ASSERT_TRUE(mb_store_meta_set(r, "x", "y") != MB_OK);/* writes are refused... */
+  ASSERT_TRUE(mb_store_begin(r) != MB_OK);             /* ...including BEGIN IMMEDIATE */
+
+  mb_store_close(r);
+  mb_store_close(w);
+  unlink(path); unlink(wal); unlink(shm);
 }
 #endif

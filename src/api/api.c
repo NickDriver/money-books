@@ -751,6 +751,41 @@ static mb_err h_mcp_tools(mb_store *s, const cJSON *a, cJSON **res) {
   return *res ? MB_OK : MB_FAIL(MB_ERR_INTERNAL, "parse catalog");
 }
 
+int mb_api_is_read_only(const char *method) {
+  if (!method) return 0;
+  /* whole families that are pure reads */
+  if (!strncmp(method, "report.", 7)) return 1;
+  if (!strncmp(method, "export.", 7)) return 1;
+  /* individual read methods — default-deny: anything not listed counts as a write */
+  static const char *const READS[] = {
+    "account.get", "account.list",
+    "item.list",
+    "invoice.get", "invoice.list",
+    "bill.get", "bill.list",
+    "counterparty.list", "counterparty.balance",
+    "book.status",
+    "mcp.tools",
+  };
+  for (size_t i = 0; i < sizeof READS / sizeof READS[0]; i++)
+    if (!strcmp(method, READS[i])) return 1;
+  return 0;
+}
+
+mb_err mb_api_dispatch_guest(mb_store *s, const char *method, const char *args_json, char **result_json) {
+  if (mb_api_is_read_only(method))
+    return mb_api_dispatch(s, method, args_json, result_json);
+
+  mb_err e = MB_FAIL(MB_ERR_PERMISSION, "method '%s' is not allowed on a read-only share", method);
+  cJSON *env = cJSON_CreateObject();
+  cJSON *err = cJSON_AddObjectToObject(env, "error");
+  cJSON_AddStringToObject(err, "code", mb_err_name(e));
+  cJSON_AddStringToObject(err, "message", mb_last_error()->message);
+  *result_json = cJSON_PrintUnformatted(env);
+  cJSON_Delete(env);
+  if (!*result_json) return MB_FAIL(MB_ERR_INTERNAL, "json print failed");
+  return e;
+}
+
 mb_err mb_api_dispatch(mb_store *s, const char *method, const char *args_json, char **result_json) {
   cJSON *args = (args_json && args_json[0]) ? cJSON_Parse(args_json) : cJSON_CreateObject();
   if (!args) {
@@ -833,6 +868,52 @@ mb_err mb_api_dispatch(mb_store *s, const char *method, const char *args_json, c
 #include "../support/mb_test.h"
 #include "../journal/journal.h"
 #include "../seed/seed.h"
+
+TEST(api, guest_gate) {
+  /* the read allowlist a share guest is permitted to call */
+  static const char *const READS[] = {
+    "account.get", "account.list", "item.list",
+    "report.pnl", "report.trial_balance", "report.balance_sheet", "report.cash_flow",
+    "report.journal", "report.ledger", "report.category_txns",
+    "export.pnl", "export.trial_balance", "export.balance_sheet",
+    "export.general_ledger", "export.journal",
+    "invoice.get", "invoice.list", "bill.get", "bill.list",
+    "counterparty.list", "counterparty.balance", "book.status", "mcp.tools",
+  };
+  for (size_t i = 0; i < sizeof READS / sizeof READS[0]; i++)
+    ASSERT_TRUE(mb_api_is_read_only(READS[i]));
+
+  /* every mutating method (and anything unknown) must be denied */
+  static const char *const WRITES[] = {
+    "account.create", "account.update", "account.set_active",
+    "item.create", "item.set_active",
+    "transaction.post", "income.record", "expense.record", "counterparty.create",
+    "invoice.create", "invoice.add_line", "invoice.issue", "invoice.remove_line",
+    "invoice.update", "invoice.void",
+    "bill.create", "bill.add_line", "bill.enter", "bill.remove_line", "bill.update", "bill.void",
+    "payment.record", "credit.apply", "book.onboard", "book.set_name", "bogus.method",
+  };
+  for (size_t i = 0; i < sizeof WRITES / sizeof WRITES[0]; i++)
+    ASSERT_FALSE(mb_api_is_read_only(WRITES[i]));
+
+  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
+  ASSERT_OK(mb_seed_starter_chart(s));
+  char *r = NULL;
+
+  /* a read passes through to a real result (not an error envelope) */
+  ASSERT_OK(mb_api_dispatch_guest(s, "report.pnl", "{}", &r));
+  ASSERT_TRUE(strstr(r, "\"error\"") == NULL);
+  free(r);
+
+  /* a write is refused with MB_ERR_PERMISSION *before* executing: a real run would fail
+   * with a validation error on the bogus ids, so PERMISSION proves the gate short-circuits */
+  mb_err e = mb_api_dispatch_guest(s, "expense.record",
+      "{\"amount\":100,\"expense_account_id\":\"x\",\"payment_account_id\":\"y\"}", &r);
+  ASSERT_ERR(e, MB_ERR_PERMISSION);
+  ASSERT_TRUE(strstr(r, "MB_ERR_PERMISSION") != NULL);
+  free(r);
+  mb_store_close(s);
+}
 
 TEST(api, account_create_then_get) {
   mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));

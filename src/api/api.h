@@ -16,4 +16,14 @@
 mb_err mb_api_dispatch(mb_store *s, const char *method, const char *args_json,
                        char **result_json) MB_MUST_CHECK;
 
+/* True if `method` only reads (safe to expose to a read-only share guest). This is an
+ * allowlist: anything not explicitly a read is treated as a write and denied. */
+int mb_api_is_read_only(const char *method);
+
+/* Like mb_api_dispatch, but refuses any non-read method with MB_ERR_PERMISSION (the host
+ * side of Phase 7b sharing). The store should also be a read-only connection, so this is
+ * the policy layer atop a physically read-only handle. */
+mb_err mb_api_dispatch_guest(mb_store *s, const char *method, const char *args_json,
+                             char **result_json) MB_MUST_CHECK;
+
 #endif /* MB_API_H */
