@@ -32,7 +32,8 @@ export async function downloadCsv(method, args = {}) {
   const res = await invoke(method, args)
   const { filename = 'export.csv', mime = 'text/csv', content = '' } = res || {}
   if (typeof window !== 'undefined' && typeof window.mbSaveFile === 'function') {
-    await window.mbSaveFile(filename, content)
+    const r = await window.mbSaveFile(filename, content)
+    if (r && r.cancelled) return null   // user dismissed the Save dialog — not an error
     return filename
   }
   const url = URL.createObjectURL(new Blob([content], { type: mime }))

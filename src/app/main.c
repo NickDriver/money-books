@@ -28,6 +28,7 @@
 #include "api/api.h"
 #include "book/book.h"
 #include "registry/registry.h"
+#include "app/savepanel.h"
 
 struct app_ctx {
   webview_t w;
@@ -227,6 +228,39 @@ static void on_invoke(const char *id, const char *req, void *arg) {
   cJSON_Delete(params);
 }
 
+/* JS calls window.mbSaveFile(filename, content) → native Save dialog (NSSavePanel).
+ * webview passes req as ["filename","content"]. Resolves with {ok, path} on save,
+ * {ok:false, cancelled:true} if dismissed; rejects the JS promise on a write error. */
+static void on_save_file(const char *id, const char *req, void *arg) {
+  struct app_ctx *c = arg;
+  cJSON *params = cJSON_Parse(req);
+  const char *filename = NULL, *content = NULL;
+  if (cJSON_IsArray(params)) {
+    cJSON *f = cJSON_GetArrayItem(params, 0);
+    cJSON *t = cJSON_GetArrayItem(params, 1);
+    if (cJSON_IsString(f)) filename = f->valuestring;
+    if (cJSON_IsString(t)) content = t->valuestring;
+  }
+
+  char buf[1024] = "";
+  int rc = mb_save_panel(filename, content, buf, sizeof buf);
+
+  cJSON *o = cJSON_CreateObject();
+  if (rc == 1) {
+    cJSON_AddBoolToObject(o, "ok", 1);
+    cJSON_AddStringToObject(o, "path", buf);
+  } else if (rc == 0) {
+    cJSON_AddBoolToObject(o, "ok", 0);
+    cJSON_AddBoolToObject(o, "cancelled", 1);
+  } else {
+    cJSON_AddStringToObject(o, "message", buf[0] ? buf : "save failed");
+  }
+  char *r = json_take(o);
+  webview_return(c->w, id, rc < 0 ? 1 : 0, r);  /* status!=0 → reject the JS promise */
+  free(r);
+  cJSON_Delete(params);
+}
+
 int main(int argc, char **argv) {
   static struct app_ctx c;
   if (mb_registry_default_path(c.reg_path, sizeof c.reg_path) != MB_OK)
@@ -252,6 +286,7 @@ int main(int argc, char **argv) {
   webview_set_title(w, title);
   webview_set_size(w, 1100, 760, WEBVIEW_HINT_NONE);
   webview_bind(w, "mbInvoke", on_invoke, &c);
+  webview_bind(w, "mbSaveFile", on_save_file, &c);  /* native Save dialog for CSV exports */
 
   /* Load the built UI. Override with MB_UI_URL (e.g. http://localhost:5173 during dev). */
   const char *url = getenv("MB_UI_URL");

@@ -31,7 +31,7 @@ export default function Reports() {
     setBusy(method); setSaved(null); setErr(null)
     try {
       const file = await downloadCsv(method)
-      setSaved({ method, file })
+      if (file) setSaved({ method, file })   // null = user cancelled the native Save dialog
     } catch (e) {
       setErr(String(e))
     } finally {
