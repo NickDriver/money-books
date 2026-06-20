@@ -62,7 +62,9 @@ proper bookkeeping fundamentals.
 
 > **▶ RESUME HERE (last session 2026-06-19).** **Phases 0–4 COMPLETE + multi-company (D25) + customer/
 > vendor credit (D26) + document lifecycle tightened; Phase 5 = MCP server only (in-app agent removed),
-> now hardened.** `make test` = **87/87 green, 0 leaks**; `make app` + `make mcp` + UI build clean;
+> now hardened; Phase 7 live read-only sharing DONE; Phase 6 cross-platform IN PROGRESS (Windows-first
+> via CMake).** `make test` = **102/102 green, 0 leaks**; `make app` + `make mcp` + UI build clean;
+> CMake (`cmake -B build && ctest`) builds all targets on macOS;
 > published at **github.com/NickDriver/money-books** (public, MIT). The React UI is wired (Dashboard,
 > Record, Transactions, Invoices&Bills w/ detail+edit+**Apply credit**+**Void**, Accounts&Categories w/
 > editing+ledger, Items w/ **All/Service/Expense filter**, Reports, company launcher w/ per-company
@@ -78,21 +80,51 @@ proper bookkeeping fundamentals.
 > 2026-06-19 below): AI access is now solely through the stdio MCP server (the user brings their own
 > LLM client, e.g. Claude Desktop). The engine makes no outbound network calls.
 >
-> **NEXT — ▶ Phase 7 (P2P sync), re-sequenced BEFORE Phase 6 (user decision 2026-06-19).** The big
-> one: `iroh-c-ffi` QUIC transport (dial-by-public-key + NAT traversal + relay), **version-vector
-> sync** of the append-only journal (no CRDT — entries are immutable, D20 identity already in place),
-> optional VPS assist. Introduces the **Rust toolchain** (first non-C dep). See SPEC §13.
+> **Phase 7 — Live read-only book sharing (REFRAMED from P2P device sync): DONE.** The pivot: instead
+> of multi-device version-vector sync, the owner ("host") serves a live **read-only** view of a book
+> over **iroh** QUIC (dial-by-public-key + NAT traversal + relay) and a trusted party (e.g. an
+> accountant) connects to view/export reports. Read-only is enforced in 3 transport-independent layers
+> (UI hides writes → `mb_api_dispatch_guest` allowlist → `mb_store_open_readonly`). 7b-1 (loopback
+> protocol) / 7b-2 (real iroh transport) / 7b-3 (app+UI wiring; **Stop revokes a *live* guest**) all
+> shipped. Introduced the **Rust toolchain** (`iroh-c-ffi`, the lone Rust dep). See SPEC §13, the
+> `phase7-live-sharing` memory, and `~/.claude/plans/linked-booping-flame.md`. (SPEC §13 still describes
+> the *abandoned* version-vector model — stale; the live-sharing plan supersedes it.)
 >
-> **Cross-platform (D27, decided 2026-06-19): one codebase, compile-time `#ifdef` selection behind the
-> existing thin seams (paths=`src/registry`, native shell=`src/app`, build), NOT separate forks.** Only
-> build/packaging/signing is per-OS; the source is shared. The Mac `Makefile` is the one Mac-specific
-> artifact → moves to **CMake** in Phase 6. Linux=XDG paths + GTK shell; Windows=%APPDATA% + Win32.
+> **NEXT — ▶ Phase 6 (Packaging + cross-platform), now IN PROGRESS — target Windows first via CMake
+> (user decision 2026-06-19).** Foundation landed & **verified on macOS** (102/102, 0 leaks): SQLite
+> **vendored** (amalgamation under `src/vendor/sqlite`, drops system `-lsqlite3` — Windows ships none);
+> a cross-platform **`CMakeLists.txt`** (test_runner / money-books-mcp / MoneyBooks, with APPLE/WIN32/
+> UNIX branches); the macOS host glue isolated behind **`src/app/platform.h`** (`platform_mac.m`;
+> `platform_win.c`/`platform_posix.c` are the next impls); and a portable **thread + libc shim**
+> (`src/support/mb_thread.*` over pthread/Win32, `src/support/mb_compat.h` for unlink/mkdir/stat/
+> gmtime_r) so the engine no longer needs pthreads or `<unistd.h>`. The Rust-free, GUI-free core
+> (engine + test_runner + mcp) is authored to compile on Windows; first Windows compile is being
+> verified on the user's machine. Remaining: Windows data-dir branch (`%APPDATA%`), `platform_win.c`
+> (file dialogs / exe path), WebView2 + iroh Windows libs for the GUI, then `.app`/MSI/AppImage
+> packaging + signing + CI. The cross-platform approach is **one codebase, compile-time selection
+> behind the thin seams** (D27), NOT separate forks.
 >
-> **Deferred to Phase 6 (after Phase 7):** packaging (`.app`/MSI/AppImage, signing/notarization,
-> NSOpenPanel "open book", CMake cross-platform build, CI). **Phase-5 fast-follows (anytime):**
+> **Deferred within Phase 6:** packaging (`.app`/MSI/AppImage, signing/notarization), NSOpenPanel/Win
+> "open book", CI. **Phase-5 fast-follows (anytime):**
 > per-tool-policy settings screen; expose items/dashboard/journal/search as MCP tools (each w/ a
 > `tests/mcp_tools.c` case); top-level entry for the MCP windows. Open §15 items: attachments,
 > backup/export UX.
+>
+> **BUILD STATUS (2026-06-19): Phase 6 cross-platform foundation — Windows-first, proven on macOS —
+> 102 tests green, 0 leaks.** Four steps, each verified on macOS (Windows side authored, compile
+> pending on the user's machine). (1) **Vendored SQLite** — the amalgamation (3.53.2, SHA3-verified)
+> under `src/vendor/sqlite`, compiled via a warnings-silenced unity wrapper `src/sqlite/
+> sqlite_amalgamation.c` into its own cached object; dropped system `-lsqlite3` (Windows has none).
+> (2) **CMake** — `CMakeLists.txt` builds `test_runner` (ASan+UBSan, ctest), `money-books-mcp`, and the
+> `MoneyBooks` GUI with APPLE/WIN32/UNIX branches; engine compiled per-target (in-tree unit tests need
+> `-DMB_TEST`, the GUI needs `-DMB_WITH_SHARE`). Makefile retained for Mac dev tooling (leaks/analyze/
+> deadcode). (3) **Platform shim** — `src/app/platform.h` + `platform_mac.m` pull the macOS host glue
+> (`_NSGetExecutablePath`, Claude config path, NSSavePanel) out of `main.c`; `savepanel.{m,h}` folded in
+> and removed. (4) **Thread + libc shims** — `src/support/mb_thread.*` (pthread/Win32 mutex+cond+thread,
+> since macOS clang lacks C11 `<threads.h>`) and `mb_compat.h` (unlink/mkdir/stat/S_ISDIR/gmtime_r);
+> ported `transport_loopback.c`, `share_protocol.c`, and `main.c`'s accept loop off raw pthread. The
+> Rust-free core (engine + tests + mcp) is now the first target buildable on a Windows toolchain.
+> Commits aecf9d2, e98e5ac, 2c6ac6e, 8980231.
 >
 > **BUILD STATUS (2026-06-19): MCP hardened + discoverable — 87 tests green, 0 leaks.** Built on the
 > agent removal below. (1) **Per-company Connect-to-Claude modal** (`ui/Launcher.jsx` + `app.mcp_info`

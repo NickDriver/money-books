@@ -418,10 +418,14 @@ which connects to the engine's tool registry. The engine itself makes **no outbo
 
 ---
 
-## 13. P2P sync — **Phase 7, next up** (RESEARCH §5)
+## 13. P2P sync — **SUPERSEDED** (RESEARCH §5)
 
-> **Re-sequenced (2026-06-19): we tackle P2P before Phase-6 packaging.** This is the "big one" and
-> introduces the Rust toolchain (iroh). Cross-platform builds (D27) follow in Phase 6.
+> **⚠ STALE (kept for the iroh research notes only).** This section describes the **abandoned**
+> version-vector multi-device *sync* model. Phase 7 was reframed (2026-06-19) to **live read-only book
+> sharing** (host serves a read-only view over iroh; a guest connects to view/export) and **shipped** —
+> see the §14 Phase 7 entry and `~/.claude/plans/linked-booping-flame.md`. The iroh transport groundwork
+> below (§5–6, §10–11) was reused; the version-vector sync model was not. Cross-platform builds (D27)
+> are now Phase 6, in progress.
 
 - **Design-now (D20):** every entry already carries `device_id`, `seq`, Lamport clock, hash chain.
 - **Transport:** `iroh-c-ffi` — dial-by-public-key QUIC + NAT traversal + relay fallback.
@@ -468,11 +472,21 @@ which connects to the engine's tool registry. The engine itself makes **no outbo
   `post_transaction` bug (uninitialized `counterparty_id`). 87 tests green, 0 leaks.
   *Remaining (optional polish): embedded HTTP/SSE MCP transport (today stdio only); a per-tool-policy
   settings screen; expose items/dashboard/journal/search tools.*
-- **▶ Phase 7 — P2P sync (NEXT, re-sequenced before Phase 6):** `iroh-c-ffi` transport,
-  version-vector sync of the append-only journal, VPS assist (§13). Brings in the Rust toolchain
-  (first non-C dependency). Chosen as the next milestone *before* shippable packaging.
-- **Phase 6 — Packaging + cross-platform (after Phase 7):** `.app`/MSI/AppImage, signing/notarization,
-  NSOpenPanel "open book", **CMake cross-platform build** (Linux/Windows, D27), shim, CI.
+- **Phase 7 — Live read-only book sharing (DONE; reframed from P2P device sync):** the original
+  version-vector multi-device sync was **replaced** by host→guest live sharing — the owner serves a
+  read-only view of a book over `iroh-c-ffi` QUIC and a trusted party (e.g. an accountant) connects to
+  view/export reports. Read-only enforced in 3 layers (UI → `mb_api_dispatch_guest` allowlist →
+  `mb_store_open_readonly`). 7b-1 loopback protocol / 7b-2 real iroh transport / 7b-3 app+UI wiring
+  (Stop revokes a live guest) all shipped. Brought in the Rust toolchain (`iroh-c-ffi`, lone Rust dep).
+  *§13 below still describes the abandoned version-vector model — stale; see `~/.claude/plans/
+  linked-booping-flame.md` for the live-sharing design that superseded it.*
+- **▶ Phase 6 — Packaging + cross-platform (IN PROGRESS; target Windows first):** foundation landed &
+  verified on macOS — SQLite **vendored** (drops system `-lsqlite3`), cross-platform **CMakeLists**
+  (test/mcp/app), macOS host glue isolated behind `src/app/platform.h`, portable thread/libc shims
+  (`src/support/mb_thread.*`, `mb_compat.h`) so the engine needs no pthreads/`<unistd.h>`. The
+  Rust-free core (engine + tests + mcp) compiles first on Windows. Remaining: Windows data-dir branch,
+  `platform_win.c` (dialogs/exe path), WebView2 + iroh Windows libs, NSOpenPanel/Win "open book",
+  `.app`/MSI/AppImage signing/notarization, CMake Linux build (D27), CI.
 
 ---
 
