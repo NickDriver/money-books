@@ -48,9 +48,10 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); }
-.app { display: flex; min-height: 100vh; }
-.sidebar { width: 200px; background: var(--panel); border-right: 1px solid var(--border);
-  padding: 16px 8px; display: flex; flex-direction: column; }
+/* The app fills the viewport exactly; only .main scrolls, so the sidebar stays pinned. */
+.app { display: flex; height: 100vh; overflow: hidden; }
+.sidebar { width: 200px; flex-shrink: 0; height: 100vh; background: var(--panel);
+  border-right: 1px solid var(--border); padding: 16px 8px; display: flex; flex-direction: column; }
 .brand { font-weight: 700; font-size: 18px; padding: 8px 12px 16px; }
 .brand .company { font-weight: 500; font-size: 12px; color: var(--accent); margin-top: 3px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
