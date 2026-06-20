@@ -12,7 +12,7 @@
 
 CC   := clang
 STD  := -std=c11
-INC  := -Isrc
+INC  := -Isrc -Isrc/vendor/sqlite
 
 # High-signal warnings as errors. Conversion warnings stay visible but non-fatal
 # (they're advisory, not bugs). Zero-variadic-args is intentional in our macros.
@@ -23,22 +23,24 @@ WARN := -Wall -Wextra -Wpedantic -Werror \
         -Wconversion -Wsign-conversion \
         -Wno-error=conversion -Wno-error=sign-conversion
 
-# SQLite compile flags (used once the store module lands; harmless now).
-DEFS := -DSQLITE_ENABLE_FTS5 -DSQLITE_DEFAULT_FOREIGN_KEYS=1 -DSQLITE_THREADSAFE=1
-
 SAN     := -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
 DEBUG   := -O0 -g3 $(SAN)
 RELEASE := -O2 -g -DNDEBUG -flto
 
 BUILD := build
 
-# Link the system SQLite for now (macOS ships 3.46 + FTS5). Before release we vendor
-# the amalgamation (add src/vendor/sqlite3.c, drop -lsqlite3) for portability/FTS5 control.
-LDLIBS := -lsqlite3
+# SQLite is vendored (src/vendor/sqlite) and compiled via the unity wrapper
+# src/sqlite/sqlite_amalgamation.c — no system libsqlite3 dependency anywhere (required
+# for Windows; pins the version everywhere; compile-time options baked into the wrapper).
+# Built once into its own object: no sanitizers, warnings off, -O2. Linked into every target.
+SQLITE_OBJ := $(BUILD)/sqlite3.o
+# Extra link libs SQLite needs per platform (none on macOS; Linux adds -lpthread -ldl -lm).
+LDLIBS :=
 
-# Engine = all library sources (no test runner, no app entry, no raw vendor — vendor is
-# compiled via a warning-silenced unity wrapper in src/json/).
-ENGINE_SRC := $(shell find src -name '*.c' -not -path 'src/test/*' -not -path 'src/vendor/*' -not -path 'src/app/*' -not -path 'src/mcpd/*' -not -path 'src/sharedemo/*')
+# Engine = all library sources (no test runner, no app entry, no raw vendor, and not the
+# SQLite unity wrapper — that is compiled separately into $(SQLITE_OBJ); the rest of vendor
+# is compiled via a warning-silenced unity wrapper in src/json/).
+ENGINE_SRC := $(shell find src -name '*.c' -not -path 'src/test/*' -not -path 'src/vendor/*' -not -path 'src/app/*' -not -path 'src/mcpd/*' -not -path 'src/sharedemo/*' -not -path 'src/sqlite/*')
 # Test build = engine + integration tests + the runner, all with -DMB_TEST.
 TEST_SRC   := $(ENGINE_SRC) $(wildcard tests/*.c) $(wildcard src/test/*.c)
 
@@ -51,22 +53,27 @@ test: $(BUILD)/test_runner
 
 TESTDEFS := -DMB_TEST
 
-$(BUILD)/test_runner: $(TEST_SRC) | $(BUILD)
-	$(CC) $(STD) $(INC) $(WARN) $(DEBUG) $(TESTDEFS) $(TEST_SRC) $(LDLIBS) -o $@
+# SQLite, vendored: compiled once, no sanitizers (it's third-party and ASan would only
+# slow it down) and warnings off. Linked into every binary below in place of -lsqlite3.
+$(SQLITE_OBJ): src/sqlite/sqlite_amalgamation.c src/vendor/sqlite/sqlite3.c | $(BUILD)
+	$(CC) $(STD) -Isrc/vendor/sqlite -O2 -w -c src/sqlite/sqlite_amalgamation.c -o $@
+
+$(BUILD)/test_runner: $(TEST_SRC) $(SQLITE_OBJ) | $(BUILD)
+	$(CC) $(STD) $(INC) $(WARN) $(DEBUG) $(TESTDEFS) $(TEST_SRC) $(SQLITE_OBJ) $(LDLIBS) -o $@
 
 # ---- release (optimized static lib) ----
 .PHONY: release
-release: | $(BUILD)
-	$(CC) $(STD) $(INC) $(WARN) $(RELEASE) $(DEFS) -c $(ENGINE_SRC)
-	ar rcs $(BUILD)/libmoneybooks.a *.o
+release: $(SQLITE_OBJ) | $(BUILD)
+	$(CC) $(STD) $(INC) $(WARN) $(RELEASE) -c $(ENGINE_SRC)
+	ar rcs $(BUILD)/libmoneybooks.a *.o $(SQLITE_OBJ)
 	@rm -f *.o
 	@echo "built $(BUILD)/libmoneybooks.a"
 
 # ---- leaks (Apple) ----
 # Built WITHOUT sanitizers: ASan replaces malloc, which `leaks` can't introspect.
 .PHONY: leaks
-leaks: | $(BUILD)
-	$(CC) $(STD) $(INC) $(WARN) -O1 -g $(TESTDEFS) $(TEST_SRC) $(LDLIBS) -o $(BUILD)/leak_runner
+leaks: $(SQLITE_OBJ) | $(BUILD)
+	$(CC) $(STD) $(INC) $(WARN) -O1 -g $(TESTDEFS) $(TEST_SRC) $(SQLITE_OBJ) $(LDLIBS) -o $(BUILD)/leak_runner
 	MallocStackLogging=1 leaks --atExit -- $(BUILD)/leak_runner
 
 # ---- static analysis ----
@@ -80,9 +87,9 @@ analyze:
 
 # ---- dead-code report (coverage: 0-hit functions are candidates) ----
 .PHONY: deadcode
-deadcode: | $(BUILD)
+deadcode: $(SQLITE_OBJ) | $(BUILD)
 	$(CC) $(STD) $(INC) -DMB_TEST -fprofile-instr-generate -fcoverage-mapping \
-	  $(TEST_SRC) $(LDLIBS) -o $(BUILD)/cov_runner
+	  $(TEST_SRC) $(SQLITE_OBJ) $(LDLIBS) -o $(BUILD)/cov_runner
 	LLVM_PROFILE_FILE=$(BUILD)/cov.profraw $(BUILD)/cov_runner >/dev/null || true
 	xcrun llvm-profdata merge -sparse $(BUILD)/cov.profraw -o $(BUILD)/cov.profdata
 	@echo "=== per-function execution (look for 0 / 0.00% = dead-code candidates) ==="
@@ -92,8 +99,8 @@ deadcode: | $(BUILD)
 
 # ---- stdio MCP server (pure C, for Claude Desktop & other MCP clients) ----
 .PHONY: mcp
-mcp: | $(BUILD)
-	$(CC) $(STD) $(INC) -O2 $(ENGINE_SRC) src/mcpd/main.c $(LDLIBS) -o $(BUILD)/money-books-mcp
+mcp: $(SQLITE_OBJ) | $(BUILD)
+	$(CC) $(STD) $(INC) -O2 $(ENGINE_SRC) src/mcpd/main.c $(SQLITE_OBJ) $(LDLIBS) -o $(BUILD)/money-books-mcp
 	@echo "built $(BUILD)/money-books-mcp  —  Claude Desktop command: $(CURDIR)/$(BUILD)/money-books-mcp <book.sqlite>"
 
 # ---- native app (macOS GUI: WKWebView via webview/webview) ----
@@ -110,11 +117,11 @@ ui:
 # The shipped app includes live read-only sharing, so it compiles with -DMB_WITH_SHARE and
 # links the iroh staticlib (built by share-lib). This is the app's lone Rust dependency.
 .PHONY: app
-app: ui share-lib | $(BUILD)
+app: ui share-lib $(SQLITE_OBJ) | $(BUILD)
 	@test -f $(WV)/core/src/webview.cc || { echo ">> run scripts/fetch_webview.sh first"; exit 1; }
 	clang++ -std=c++17 -DWEBVIEW_STATIC -I$(WV)/core/include -O2 -c $(WV)/core/src/webview.cc -o $(BUILD)/webview.o
 	clang -std=c11 -DWEBVIEW_STATIC -DMB_WITH_SHARE $(INC) -I$(WV)/core/include -I$(IROH_DIR) -O2 $(APP_C) $(BUILD)/webview.o \
-	  $(IROH_LIB) $(LDLIBS) -lc++ -framework WebKit -framework Cocoa $(IROH_NATIVE) -o $(BUILD)/MoneyBooks
+	  $(SQLITE_OBJ) $(IROH_LIB) $(LDLIBS) -lc++ -framework WebKit -framework Cocoa $(IROH_NATIVE) -o $(BUILD)/MoneyBooks
 	@echo "built $(BUILD)/MoneyBooks  —  run: ./$(BUILD)/MoneyBooks book.sqlite"
 
 # ---- iroh share transport (Phase 7b-2 — the lone Rust dependency) ----
@@ -135,9 +142,9 @@ share-lib:
 
 # Two-process demo proving real host<->guest QUIC (no UI). See src/sharedemo/main.c.
 .PHONY: share-demo
-share-demo: share-lib | $(BUILD)
+share-demo: share-lib $(SQLITE_OBJ) | $(BUILD)
 	$(CC) $(STD) $(INC) -I$(IROH_DIR) -O2 -DMB_WITH_SHARE $(ENGINE_SRC) src/sharedemo/main.c \
-	  $(IROH_LIB) $(LDLIBS) $(IROH_NATIVE) -o $(BUILD)/share-demo
+	  $(SQLITE_OBJ) $(IROH_LIB) $(LDLIBS) $(IROH_NATIVE) -o $(BUILD)/share-demo
 	@echo "built $(BUILD)/share-demo"
 	@echo "  host:  ./$(BUILD)/share-demo host book.sqlite"
 	@echo "  guest: ./$(BUILD)/share-demo guest '<address from host>'"

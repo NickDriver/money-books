@@ -1,0 +1,10 @@
+SQLite amalgamation, vendored for portability (Windows has no system sqlite3).
+
+Version:   3.53.2 (3530200)
+Source:    https://www.sqlite.org/2026/sqlite-amalgamation-3530200.zip
+SHA3-256:  81142986038e18f96c4a54e1a72562ae17e502a916f2a7701eff43388cbf1a40 (zip)
+Files:     sqlite3.c, sqlite3.h, sqlite3ext.h (shell.c not vendored)
+
+Compiled as its own translation unit via src/sqlite/sqlite_amalgamation.c with the
+project compile-time options baked in. To update: re-download, re-verify the SHA3,
+replace these three files, keep this NOTES current.
