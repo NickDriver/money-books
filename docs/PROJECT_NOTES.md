@@ -61,11 +61,12 @@ proper bookkeeping fundamentals.
 ## 4. Decision Log (confirmed)
 
 > **▶ RESUME HERE (last session 2026-06-19).** **Phases 0–4 COMPLETE + multi-company (D25) + customer/
-> vendor credit (D26) + document lifecycle tightened; Phase 5 = MCP server only (in-app agent removed).**
-> `make test` = **84/84 green, 0 leaks**; `make app` + `make mcp` + UI build clean; published at
-> **github.com/NickDriver/money-books** (public, MIT). The React UI is wired (Dashboard, Record,
-> Transactions, Invoices&Bills w/ detail+edit+**Apply credit**+**Void**, Accounts&Categories w/
-> editing+ledger, Items, Reports, company launcher). Latest build details are in the dated BUILD STATUS
+> vendor credit (D26) + document lifecycle tightened; Phase 5 = MCP server only (in-app agent removed),
+> now hardened.** `make test` = **87/87 green, 0 leaks**; `make app` + `make mcp` + UI build clean;
+> published at **github.com/NickDriver/money-books** (public, MIT). The React UI is wired (Dashboard,
+> Record, Transactions, Invoices&Bills w/ detail+edit+**Apply credit**+**Void**, Accounts&Categories w/
+> editing+ledger, Items w/ **All/Service/Expense filter**, Reports, company launcher w/ per-company
+> **Connect-to-Claude** + **MCP tools window**). Latest build details are in the dated BUILD STATUS
 > blocks below (newest first).
 >
 > **Test-suite audit (docs/TEST_AUDIT.md) — COMPLETE.** All findings F1–F11 closed; the one real bug
@@ -77,13 +78,35 @@ proper bookkeeping fundamentals.
 > 2026-06-19 below): AI access is now solely through the stdio MCP server (the user brings their own
 > LLM client, e.g. Claude Desktop). The engine makes no outbound network calls.
 >
-> **NEXT (optional / later):**
-> 1. **Embedded HTTP/SSE MCP transport** (today it's stdio only) — for HTTP-based MCP clients.
-> 2. **Per-tool-policy settings screen** — surface the existing Permit/Ask/Block (`tool_permission`,
->    migration v3) in the UI so the user can edit policy that the MCP layer already enforces.
+> **NEXT — ▶ Phase 7 (P2P sync), re-sequenced BEFORE Phase 6 (user decision 2026-06-19).** The big
+> one: `iroh-c-ffi` QUIC transport (dial-by-public-key + NAT traversal + relay), **version-vector
+> sync** of the append-only journal (no CRDT — entries are immutable, D20 identity already in place),
+> optional VPS assist. Introduces the **Rust toolchain** (first non-C dep). See SPEC §13.
 >
-> Then **Phase 6** (packaging: `.app`, signing/notarization, native NSOpenPanel for "open book",
-> shim, CI) and **Phase 7** (P2P/iroh). Open §15 items: attachments, backup/export UX.
+> **Cross-platform (D27, decided 2026-06-19): one codebase, compile-time `#ifdef` selection behind the
+> existing thin seams (paths=`src/registry`, native shell=`src/app`, build), NOT separate forks.** Only
+> build/packaging/signing is per-OS; the source is shared. The Mac `Makefile` is the one Mac-specific
+> artifact → moves to **CMake** in Phase 6. Linux=XDG paths + GTK shell; Windows=%APPDATA% + Win32.
+>
+> **Deferred to Phase 6 (after Phase 7):** packaging (`.app`/MSI/AppImage, signing/notarization,
+> NSOpenPanel "open book", CMake cross-platform build, CI). **Phase-5 fast-follows (anytime):**
+> per-tool-policy settings screen; expose items/dashboard/journal/search as MCP tools (each w/ a
+> `tests/mcp_tools.c` case); top-level entry for the MCP windows. Open §15 items: attachments,
+> backup/export UX.
+>
+> **BUILD STATUS (2026-06-19): MCP hardened + discoverable — 87 tests green, 0 leaks.** Built on the
+> agent removal below. (1) **Per-company Connect-to-Claude modal** (`ui/Launcher.jsx` + `app.mcp_info`
+> shell method resolving real binary/book/Claude-config paths via `_NSGetExecutablePath`) generates a
+> ready-to-paste MCP config snippet — one server entry per book. (2) **MCP tools window** lists the
+> exposed surface (Read/Write) from `mb_mcp_tools_catalog` over the live `TOOLS[]` registry (new
+> `mcp.tools` API method). (3) **Server-side write-approval gate**: every write needs `confirm:true`,
+> else the server returns `approval_required` and writes nothing — independent of Permit/Ask/Block,
+> works even if the client auto-approves. (4) Added `list_invoices`/`list_bills`/`get_bill` (now **23
+> tools**). (5) **Integration tests** `tests/mcp_tools.c` exercise every tool over JSON-RPC — which
+> caught a real bug: `post_transaction` (`h_transaction_post`) `malloc`'d `mb_posting_in` and left
+> `counterparty_id` uninitialized (UB; ASan 0xbe → crash) — **fixed**. (6) UI: Items **All/Service/
+> Expense** filter. Rule going forward (saved to memory): **every new MCP tool ships with a
+> `tests/mcp_tools.c` case.** Docs updated (SPEC §8.2/§8.3/§14/§7, MCP.md).
 >
 > **BUILD STATUS (2026-06-19): in-app sidebar agent REMOVED — 84 tests green, 0 leaks.** Deleted the
 > in-app agent feature: `src/agent` (tool-use loop), `src/llm` (OpenAI/OpenRouter via libcurl),
@@ -492,6 +515,17 @@ proper bookkeeping fundamentals.
   bridge. Biggest ecosystem (charts/forms/components for reports+dashboard). Trade-off: adds a Node/
   Vite build step to the toolchain and a larger (still WebView-scale, not Chromium) JS bundle.
   Portable (just static assets). Preact is a drop-in lighter fallback if bundle size bites. _(Confirmed 2026-06-14.)_
+- **D27 — Cross-platform: one codebase, compile-time selection (NOT separate forks).** Realizes D23.
+  Keep a **single `src/` tree**; pick the per-OS implementation at **compile time**
+  (`#if defined(__APPLE__) / _WIN32 / __linux__`) behind the thin seams that already exist —
+  **paths** (`src/registry`), **native shell/dialogs** (`src/app`; `webview/webview` already abstracts
+  the WebView → Cocoa/WebKitGTK/WebView2), and **build**. We do **not** maintain a forked "Windows
+  build" of the Mac app: the engine (double-entry, SQLite, MCP, reports) is ~95% identical everywhere,
+  so forking would duplicate the shared bulk and drift. What's genuinely per-OS is **build + packaging
+  + signing**, not source: one repo → signed `.app` (mac) / MSI (Windows) / AppImage·deb (Linux). The
+  Mac `Makefile` (clang + `-framework`) is the one Mac-specific artifact and moves to **CMake** in
+  Phase 6. **Sequencing: Phase 7 (P2P/iroh) first, then Phase 6 (packaging + cross-platform).**
+  _(Decided 2026-06-19.)_
 
 ---
 

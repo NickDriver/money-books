@@ -30,8 +30,18 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-Restart Claude Desktop; "money-books" appears as a tool source. Then ask things like
+Restart Claude Desktop (fully quit — ⌘Q); "money-books" appears as a tool source. Then ask things like
 *"what's my P&L this quarter?"* or *"record $2,500 of consulting income deposited to checking."*
+
+**Multiple companies.** One server entry serves exactly one book (`argv[1]`); there is no
+switch-company tool over MCP. To expose N companies, register N entries with distinct names, e.g.
+`books-acme` / `books-side-gig`, each pointing at its own `.sqlite`. The app generates the snippet for
+you: **⇄ Switch company → MCP** on a company row produces a ready-to-paste entry (real paths via the
+`app.mcp_info` shell method).
+
+**Discovering the surface in-app.** The "MCP tools" window (same modal) lists all tools grouped
+Read / Write, sourced from `mb_mcp_tools_catalog` over the live registry — so the user sees the exact
+capability *before* connecting any client.
 
 ## Tools (23)
 
@@ -68,10 +78,10 @@ and weaker than, the approval gate above):
 
 ## Status & roadmap
 
-- **Done:** stdio transport (what Claude Desktop uses), all 20 tools, permission policy. 6 MCP unit
-  tests + a stdio smoke test, 0 leaks.
+- **Done:** stdio transport (what Claude Desktop uses), all 23 tools, permission policy, write-approval
+  gate, tool catalog. MCP unit tests + a full `tests/mcp_tools.c` integration pass over every tool, 0 leaks.
 - **Future:** embedded local HTTP/SSE transport (for HTTP-based MCP clients) via civetweb; a settings
-  screen for per-tool policy.
+  screen for per-tool policy; expose the remaining engine ops (items, dashboard, journal, search).
 - **Removed (2026-06-19):** the in-app sidebar agent (pluggable Anthropic/OpenAI/OpenRouter LLM client
   + redacting egress, D9/D10). AI access is now solely through this MCP server — the user brings their
   own LLM client (e.g. Claude Desktop). The engine makes no outbound network calls.

@@ -104,13 +104,30 @@ Pure C throughout; a Rust toolchain enters **only** at the future iroh phase.
 Ship Mac/M-chip first, **design portably**. The engine is portable C; platform-specific code sits
 behind thin abstractions:
 - **UI chrome glue** — native menus/dialogs via `objc_msgSend` (mac); per-OS equivalents later.
-- **Paths** — data/config/cache dir resolution per OS.
+- **Paths** — data/config/cache dir resolution per OS (`src/registry` is already the single seam).
 
 *(A `mb_secret_store` Keychain abstraction existed for the in-app agent's API keys; it was removed
 with the agent. If a future feature needs OS secret storage, reintroduce it behind this seam.)*
 
 Nearly the whole stack already ports — `webview/webview` (WebKitGTK/WebView2), SQLite, civetweb,
 yyjson, iroh, msquic. **Linux & Windows are explicit future targets, not v1.**
+
+**Cross-platform strategy (D27): one codebase, compile-time platform selection — NOT separate
+forks.** The portable engine (double-entry, SQLite, MCP, reports, JSON) is ~95% of the code and is
+identical on every OS; only a few seams differ. So we keep a **single source tree** and select the
+right implementation at **compile time** (`#if defined(__APPLE__) / _WIN32 / __linux__`) behind the
+existing thin abstractions — never a forked "Windows version." Forking would duplicate the shared
+95% and guarantee drift. Concretely, the per-OS seams are:
+- **Paths** — app-data/config dir (`src/registry`): macOS `~/Library/Application Support`, Linux
+  XDG (`~/.local/share`), Windows `%APPDATA%`.
+- **Native shell glue** (`src/app`): window + file-open dialog — `objc_msgSend`/Cocoa (mac),
+  GTK (Linux), Win32 (Windows). `webview/webview` already abstracts the WebView itself.
+- **Build** — the macOS `Makefile` (clang + `-framework`) is the one genuinely Mac-specific artifact;
+  cross-platform builds move to **CMake** (or per-OS make fragments) so each OS links its own
+  frameworks/libs from the same sources. This is a Phase-6 (packaging) task, after Phase 7.
+
+What is **per-platform** is the *build + packaging + signing*, not the *code*: one repo produces a
+signed `.app` (mac), an installer/MSI (Windows), and an AppImage/deb (Linux) from the same `src/`.
 
 ---
 
@@ -290,6 +307,12 @@ All reports support **date-range and account/category filtering**.
 - **Primary flows ("few buttons"):** record income, record expense, new invoice, mark invoice paid,
   new bill / pay bill, add account/category, add service/expense item, view reports.
 - Screens: Dashboard · Transactions · Invoices · Bills · Accounts & Categories · Items · Reports.
+- **MCP affordances (company launcher):** each company row has a **Connect to Claude** action that
+  opens a modal with a ready-to-paste MCP config snippet (real binary/book/config paths via
+  `app.mcp_info` — one server entry per company), and a **MCP tools window** listing the full exposed
+  surface (Read vs Write + the approval note) so the user knows the capability *before* connecting a
+  client. *(A top-level entry point for these is a possible fast-follow — today they're under ⇄ Switch
+  company.)*
 - **Detail views:** clicking an invoice/bill row opens a **detail view** (header + counterparty +
   line items + total + status + an Edit (DRAFT) / Void (issued, unpaid) affordance per the edit
   model above). Clicking a
@@ -311,19 +334,31 @@ All reports support **date-range and account/category filtering**.
   own; an external MCP client (e.g. Claude Desktop) connects to the engine's tool registry.
 
 ### 8.2 Tool surface (intent-based, never raw CRUD — D8)
-**Reads (default Permit):** `list_accounts`, `get_account`, `list_transactions`, `get_transaction`,
-`list_items`, `list_counterparties`, `list_invoices`, `get_invoice`, `list_bills`, `run_report`,
-`get_dashboard`, `search`.
-**Writes (default Ask):** `add_account`, `update_account`, `archive_account`, `add_item`,
-`update_item`, `record_income`, `record_expense`, `record_transaction`, `reverse_transaction`,
-`create_invoice`, `issue_invoice`, `record_payment`, `create_bill`, `pay_bill`, `void_invoice`,
-`add_counterparty`, `pin_widget` / `create_view`.
-Each tool has a JSON-Schema input; writes go through the engine (invariants hold; corrections via reversal).
+**Implemented: 23 tools** (each maps 1:1 to an `mb_api_dispatch` method — the same surface the UI
+bridge uses), introspectable via `mb_mcp_tools_catalog` (the in-app "MCP tools" window, §7).
+- **Reads (11, default Permit):** `list_accounts`, `get_account`, `list_counterparties`,
+  `get_invoice`, `list_invoices`, `get_bill`, `list_bills`, `report_trial_balance`, `report_pnl`,
+  `report_balance_sheet`, `report_cash_flow`.
+- **Writes (12, default Ask + approval gate):** `create_account`, `record_income`, `record_expense`,
+  `post_transaction`, `create_counterparty`, `create_invoice`, `add_invoice_line`, `issue_invoice`,
+  `create_bill`, `add_bill_line`, `enter_bill`, `record_payment`.
+
+Each tool has a JSON-Schema input; writes go through the engine (invariants hold; corrections via
+reversal). Coverage: `tests/mcp_tools.c` drives **every tool through the JSON-RPC layer** end-to-end
+(a rule going forward — a new tool ships with its integration test). *Not yet exposed (engine supports
+them): items, dashboard, transactions journal, search — fast-follow additions.*
 
 ### 8.3 Permissions (D18)
 Per-tool policy **Permit / Ask / Block** (Claude-Desktop-connector style). Enforced **server-side**
 in the engine/MCP layer (covers every external MCP client). Factory defaults: reads =
 Permit, writes = **Ask**, nothing Block.
+
+**Write-approval gate (server-side, stronger than policy).** Independent of the policy above, *every*
+write tool requires explicit user approval: called without `confirm: true` the server returns an
+`approval_required` message and **writes nothing**; the client shows it to the user, who approves, and
+the tool is re-called with `confirm: true`. This does not trust the client to prompt — even a client
+that auto-approves still gets the gate. `tools/list` advertises the `confirm` param + a `[WRITE]` note.
+BLOCK still hard-refuses; reads are never gated.
 
 ### 8.4 Sidebar agent (D9) — **removed**
 An in-app sidebar agent (pluggable Anthropic/OpenAI/OpenRouter LLM client over libcurl, with a
@@ -383,7 +418,10 @@ which connects to the engine's tool registry. The engine itself makes **no outbo
 
 ---
 
-## 13. Future: P2P sync (RESEARCH §5)
+## 13. P2P sync — **Phase 7, next up** (RESEARCH §5)
+
+> **Re-sequenced (2026-06-19): we tackle P2P before Phase-6 packaging.** This is the "big one" and
+> introduces the Rust toolchain (iroh). Cross-platform builds (D27) follow in Phase 6.
 
 - **Design-now (D20):** every entry already carries `device_id`, `seq`, Lamport clock, hash chain.
 - **Transport:** `iroh-c-ffi` — dial-by-public-key QUIC + NAT traversal + relay fallback.
@@ -417,16 +455,24 @@ which connects to the engine's tool registry. The engine itself makes **no outbo
   `mb_item_list`; Items tab create/archive; **"+ Add from item"** autofills invoice/bill lines —
   description, qty, price, category — filtered by Service/Expense). ✅ verified live in preview each
   step; `make test` 76/76. **Phase 4 complete.**
-- **Phase 5 — AI (MCP server DONE, 2026-06-15; in-app agent REMOVED, 2026-06-19):** MCP server
-  `src/mcp` (JSON-RPC 2.0, protocol 2025-11-25) — 20 intent tools over `mb_api_dispatch`, per-tool
-  Permit/Ask/Block (D18), stdio binary `make mcp` for Claude Desktop ([MCP.md](MCP.md)). **AI access
-  is now solely via this MCP server** (the user brings their own LLM client). The in-app sidebar agent
-  (`src/agent`/`src/llm`/`src/redact`/`src/secret`, `agent.send` + Assistant/Settings UI) was built
-  and then **deleted** — it duplicated an external MCP client while turning the offline engine into a
-  network client. *Remaining (optional Phase 5 polish): embedded HTTP/SSE MCP transport (today stdio
-  only).*
-- **Phase 6 — Packaging:** `.app`, signing/notarization, shim, CI.
-- **Phase 7+ — P2P:** iroh transport, version-vector sync, VPS assist.
+- **Phase 5 — AI (MCP server DONE, 2026-06-15; in-app agent REMOVED + MCP hardened, 2026-06-19):**
+  MCP server `src/mcp` (JSON-RPC 2.0, protocol 2025-11-25) — **23 intent tools** over `mb_api_dispatch`,
+  per-tool Permit/Ask/Block (D18), stdio binary `make mcp` for Claude Desktop ([MCP.md](MCP.md)). **AI
+  access is now solely via this MCP server** (the user brings their own LLM client). The in-app sidebar
+  agent (`src/agent`/`src/llm`/`src/redact`/`src/secret`, `agent.send` + Assistant/Settings UI) was
+  built and then **deleted** — it duplicated an external MCP client while turning the offline engine
+  into a network client. Hardened since: **server-side write-approval gate** (every write needs
+  `confirm:true`, §8.3); `list_invoices`/`list_bills`/`get_bill`; tool **catalog** (`mb_mcp_tools_catalog`)
+  behind the in-app **MCP tools window** + per-company **Connect-to-Claude** modal (`app.mcp_info`, §7);
+  **integration tests** drive every tool over JSON-RPC (`tests/mcp_tools.c`) — which caught a real
+  `post_transaction` bug (uninitialized `counterparty_id`). 87 tests green, 0 leaks.
+  *Remaining (optional polish): embedded HTTP/SSE MCP transport (today stdio only); a per-tool-policy
+  settings screen; expose items/dashboard/journal/search tools.*
+- **▶ Phase 7 — P2P sync (NEXT, re-sequenced before Phase 6):** `iroh-c-ffi` transport,
+  version-vector sync of the append-only journal, VPS assist (§13). Brings in the Rust toolchain
+  (first non-C dependency). Chosen as the next milestone *before* shippable packaging.
+- **Phase 6 — Packaging + cross-platform (after Phase 7):** `.app`/MSI/AppImage, signing/notarization,
+  NSOpenPanel "open book", **CMake cross-platform build** (Linux/Windows, D27), shim, CI.
 
 ---
 
@@ -459,5 +505,8 @@ Phase 0 testing/error/build · ~~D22 portable secret store (Keychain now)~~ *(re
 company + app-level registry + launcher (no in-DB multi-tenancy) · D26 customer/vendor credit =
 overpayment allowed; per-counterparty AR/AP **balance-forward** truth (AR/AP postings tagged with
 `counterparty_id`) + an `allocation` open-item ledger; available credit applied to open documents
-**manually** (`credit.apply`, no cash / no journal entry). Full text:
+**manually** (`credit.apply`, no cash / no journal entry). · D27 cross-platform = **one codebase,
+compile-time platform selection** (`#ifdef` behind thin seams: paths, native shell, build), **not
+separate forks**; per-OS differs only in build/packaging/signing, not source (§3.3). Sequencing:
+**Phase 7 (P2P) before Phase 6 (packaging + cross-platform)**. Full text:
 [PROJECT_NOTES.md](PROJECT_NOTES.md).
