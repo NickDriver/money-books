@@ -54,6 +54,18 @@ export default function App() {
     window.location.reload()
   }
 
+  // Guest keepalive: poll a cheap read so that if the host stops sharing (or the link drops),
+  // we notice within a couple seconds even when idle, and fall back to the launcher instead of
+  // showing a frozen read-only view the host has already revoked.
+  useEffect(() => {
+    if (!isGuest) return
+    let stop = false
+    const t = setInterval(() => {
+      invoke('book.status').catch(() => { if (!stop) { stop = true; clearInterval(t); window.location.reload() } })
+    }, 2500)
+    return () => { stop = true; clearInterval(t) }
+  }, [isGuest])
+
   if (current === undefined) return null
   if (showLauncher || current === null) return <Launcher hasCurrent={!!current} onCancel={() => setShowLauncher(false)} />
   if (onboarded === null) return null

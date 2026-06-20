@@ -82,7 +82,7 @@ export default function ShareModal({ onClose }) {
             </p>
             <div style={{ marginTop: 12 }}>
               <button className="btn-outline neg" disabled={busy} onClick={stop}>Stop sharing</button>
-              <span className="muted" style={{ fontSize: 12.5, marginLeft: 10 }}>Stops new viewers from connecting. The link stays bound until you quit the app.</span>
+              <span className="muted" style={{ fontSize: 12.5, marginLeft: 10 }}>Cuts off anyone currently connected and blocks new viewers. They can no longer pull data.</span>
             </div>
           </>
         )}

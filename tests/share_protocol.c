@@ -6,6 +6,7 @@
  * malformed frame gets an error envelope without killing the session. Zero network, zero Rust.
  */
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include "../src/share/share.h"
@@ -81,6 +82,50 @@ TEST(share, protocol_over_loopback) {
   free(r);
 
   guest.close(guest.ctx);     /* host serve loop sees EOF and returns */
+  pthread_join(th, NULL);
+  mb_share_loopback_free(st);
+  mb_store_close(s);
+}
+
+/* The gated serve drops an already-connected guest the moment the owner stops sharing:
+ * the next request is refused unanswered and the host closes the link from its own thread.
+ * This is what makes the "Stop sharing" button actually revoke a live guest. */
+static int gate_cb(void *p) { return atomic_load((_Atomic int *)p); }
+struct gated_arg { mb_store *ro; mb_share_transport *t; _Atomic int *open; };
+static void *serve_gated_thread(void *p) {
+  struct gated_arg *a = p;
+  (void)mb_share_serve_gated(a->ro, a->t, gate_cb, a->open);
+  a->t->close(a->t->ctx);   /* mirror the app: close from the serving thread → guest sees the drop */
+  return NULL;
+}
+
+TEST(share, stop_drops_connected_guest) {
+  mb_store *s = NULL;
+  ASSERT_OK(mb_store_open_memory(&s));
+  ASSERT_OK(mb_seed_starter_chart(s));
+
+  mb_share_transport host, guest;
+  void *st = NULL;
+  ASSERT_OK(mb_share_loopback_pair(&host, &guest, &st));
+
+  _Atomic int open = 1;
+  pthread_t th;
+  struct gated_arg ga = { s, &host, &open };
+  ASSERT_EQ_INT(pthread_create(&th, NULL, serve_gated_thread, &ga), 0);
+
+  /* while sharing is on, the guest can read */
+  char *r = NULL;
+  ASSERT_OK(mb_share_call(&guest, "book.status", "{}", &r));
+  ASSERT_TRUE(strstr(r, "error") == NULL);
+  free(r);
+
+  /* owner clicks Stop — the very next guest call is dropped and the link closes */
+  atomic_store(&open, 0);
+  r = NULL;
+  ASSERT_ERR(mb_share_call(&guest, "book.status", "{}", &r), MB_ERR_IO);
+  ASSERT_TRUE(r == NULL);   /* no response was sent */
+
+  guest.close(guest.ctx);
   pthread_join(th, NULL);
   mb_share_loopback_free(st);
   mb_store_close(s);

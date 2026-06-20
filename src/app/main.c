@@ -130,9 +130,17 @@ static void mcp_binary_path(char *buf, size_t n) {
 
 /* ---- live read-only sharing (Phase 7b-3) ---- */
 #ifdef MB_WITH_SHARE
+/* The serve loop's gate: nonzero while sharing is on. Checked per request, so stopping cuts
+ * off an already-connected guest (on their next call/keepalive), not just new ones. */
+static int share_gate_open(void *arg) {
+  struct app_ctx *c = arg;
+  return atomic_load(&c->share.serving);
+}
+
 /* Accept guests forever on the host endpoint. Serves each only while the gate is open;
  * when sharing is stopped, a connecting guest is accepted and immediately closed (clean EOF,
- * no data). Runs detached for the app session — the OS reclaims the endpoint at exit. */
+ * no data), and a connected guest is dropped on its next request. Runs detached for the app
+ * session — the OS reclaims the endpoint at exit. */
 static void *share_loop(void *arg) {
   struct app_ctx *c = arg;
   for (;;) {
@@ -143,8 +151,8 @@ static void *share_loop(void *arg) {
     }
     if (!atomic_load(&c->share.serving)) { t.close(t.ctx); continue; }  /* stopped → refuse */
     atomic_fetch_add(&c->share.guests, 1);
-    (void)mb_share_serve(c->share.ro, &t);   /* returns when this guest disconnects */
-    t.close(t.ctx);
+    (void)mb_share_serve_gated(c->share.ro, &t, share_gate_open, c);  /* returns on disconnect or stop */
+    t.close(t.ctx);   /* close from THIS thread (safe) — guest sees the link drop */
   }
   return NULL;
 }

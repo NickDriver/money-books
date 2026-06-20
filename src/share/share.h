@@ -19,6 +19,14 @@ mb_err mb_share_handle_one(mb_store *ro, mb_share_transport *t) MB_MUST_CHECK;
 /* Serve requests until the transport closes (run this on the host's per-guest thread). */
 mb_err mb_share_serve(mb_store *ro, mb_share_transport *t) MB_MUST_CHECK;
 
+/* Like mb_share_serve, but checks `open(octx)` after each request arrives and before
+ * answering it: when it returns 0 (the owner stopped sharing), the request is dropped
+ * unanswered and the loop returns MB_OK so the caller can close the connection from this
+ * thread. This makes "Stop sharing" cut off an already-connected guest on their next call
+ * (or next keepalive), not just refuse new ones. */
+mb_err mb_share_serve_gated(mb_store *ro, mb_share_transport *t,
+                            int (*open)(void *), void *octx) MB_MUST_CHECK;
+
 /* Guest side: send one request, return the host's JSON response (malloc'd, NUL-terminated;
  * caller frees). The response may be a result or an {"error":..} envelope — that's an
  * application outcome, not a transport failure, so this returns MB_OK on a successful

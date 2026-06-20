@@ -15,10 +15,9 @@ static char *err_envelope(const char *code, const char *msg) {
   return s;
 }
 
-mb_err mb_share_handle_one(mb_store *ro, mb_share_transport *t) {
-  void *req = NULL; size_t rlen = 0;
-  MB_TRY(t->recv(t->ctx, &req, &rlen));   /* MB_ERR_IO at EOF — caller's loop ends */
-
+/* Dispatch one already-received request frame and send its response. Takes ownership of
+ * `req` (frees it). Shared by handle_one and the gated serve loop. */
+static mb_err respond_to(mb_store *ro, mb_share_transport *t, void *req, size_t rlen) {
   cJSON *j = cJSON_ParseWithLength((const char *)req, rlen);
   free(req);
 
@@ -41,10 +40,32 @@ mb_err mb_share_handle_one(mb_store *ro, mb_share_transport *t) {
   return e;
 }
 
+mb_err mb_share_handle_one(mb_store *ro, mb_share_transport *t) {
+  void *req = NULL; size_t rlen = 0;
+  MB_TRY(t->recv(t->ctx, &req, &rlen));   /* MB_ERR_IO at EOF — caller's loop ends */
+  return respond_to(ro, t, req, rlen);
+}
+
 mb_err mb_share_serve(mb_store *ro, mb_share_transport *t) {
   for (;;) {
     mb_err e = mb_share_handle_one(ro, t);
     if (e != MB_OK) return e;   /* MB_ERR_IO on close = normal end of session */
+  }
+}
+
+mb_err mb_share_serve_gated(mb_store *ro, mb_share_transport *t,
+                            int (*open)(void *), void *octx) {
+  for (;;) {
+    void *req = NULL; size_t rlen = 0;
+    mb_err e = t->recv(t->ctx, &req, &rlen);
+    if (e != MB_OK) return e;                          /* guest disconnected (EOF) */
+    /* Check the gate AFTER a frame arrives but BEFORE answering it: if the owner stopped
+     * sharing while this guest was connected, drop the request unanswered and end the
+     * session. The caller closes the transport from THIS (the serving) thread — safe,
+     * unlike closing a connection another thread is blocked reading. */
+    if (open && !open(octx)) { free(req); return MB_OK; }
+    e = respond_to(ro, t, req, rlen);
+    if (e != MB_OK) return e;
   }
 }
 
