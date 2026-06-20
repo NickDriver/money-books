@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "../support/mb_compat.h"   /* unlink + gmtime_r (portable across POSIX/Win32) */
 #include "../support/mb_id.h"
 
 struct mb_store {
@@ -383,7 +384,6 @@ void mb_store_close(mb_store *s) {
 
 #ifdef MB_TEST
 #include "../support/mb_test.h"
-#include <unistd.h>   /* unlink */
 
 TEST(store, open_and_meta) {
   mb_store *s = NULL;

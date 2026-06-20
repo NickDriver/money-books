@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
+#include "../support/mb_compat.h"   /* mkdir/stat/S_ISDIR/unlink (portable across POSIX/Win32) */
 #include "vendor/cjson/cJSON.h"
 
 /* ---- config dir (the one platform-specific bit; D23) ---- */
@@ -147,7 +147,6 @@ mb_err mb_registry_list(const char *regpath, mb_book_ref **out, int *n) {
 
 #ifdef MB_TEST
 #include "../support/mb_test.h"
-#include <unistd.h>
 
 TEST(registry, add_update_list_forget) {
   const char *reg = "/tmp/mb_registry_test.json";

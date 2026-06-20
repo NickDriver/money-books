@@ -33,7 +33,7 @@ mb_err mb_book_create(const char *path, const char *name, const char *template_)
 #ifdef MB_TEST
 #include "../support/mb_test.h"
 #include "../account/account.h"
-#include <unistd.h>
+#include "../support/mb_compat.h"   /* unlink (portable) */
 
 TEST(book, create_seeds_and_names) {
   const char *path = "/tmp/mb_book_create_test.sqlite";

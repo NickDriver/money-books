@@ -5,10 +5,10 @@
  * will. Proves: reads return the host's real data, writes are refused over the wire, and a
  * malformed frame gets an error envelope without killing the session. Zero network, zero Rust.
  */
-#include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../src/support/mb_thread.h"
 #include "../src/share/share.h"
 #include "../src/share/transport.h"
 #include "../src/store/store.h"
@@ -43,9 +43,9 @@ TEST(share, protocol_over_loopback) {
   void *st = NULL;
   ASSERT_OK(mb_share_loopback_pair(&host, &guest, &st));
 
-  pthread_t th;
+  mb_thread th;
   struct serve_arg sa = { s, &host };
-  ASSERT_EQ_INT(pthread_create(&th, NULL, serve_thread, &sa), 0);
+  ASSERT_EQ_INT(mb_thread_create(&th, serve_thread, &sa), 0);
 
   char *r = NULL;
 
@@ -82,7 +82,7 @@ TEST(share, protocol_over_loopback) {
   free(r);
 
   guest.close(guest.ctx);     /* host serve loop sees EOF and returns */
-  pthread_join(th, NULL);
+  mb_thread_join(th);
   mb_share_loopback_free(st);
   mb_store_close(s);
 }
@@ -109,9 +109,9 @@ TEST(share, stop_drops_connected_guest) {
   ASSERT_OK(mb_share_loopback_pair(&host, &guest, &st));
 
   _Atomic int open = 1;
-  pthread_t th;
+  mb_thread th;
   struct gated_arg ga = { s, &host, &open };
-  ASSERT_EQ_INT(pthread_create(&th, NULL, serve_gated_thread, &ga), 0);
+  ASSERT_EQ_INT(mb_thread_create(&th, serve_gated_thread, &ga), 0);
 
   /* while sharing is on, the guest can read */
   char *r = NULL;
@@ -126,7 +126,7 @@ TEST(share, stop_drops_connected_guest) {
   ASSERT_TRUE(r == NULL);   /* no response was sent */
 
   guest.close(guest.ctx);
-  pthread_join(th, NULL);
+  mb_thread_join(th);
   mb_share_loopback_free(st);
   mb_store_close(s);
 }

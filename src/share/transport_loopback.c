@@ -4,13 +4,13 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
+#include "support/mb_thread.h"
 
 /* one direction: a FIFO of owned byte buffers, with blocking pop and a closed flag */
 typedef struct node { void *buf; size_t len; struct node *next; } node;
 typedef struct {
-  pthread_mutex_t mu;
-  pthread_cond_t  cond;
+  mb_mutex mu;
+  mb_cond  cond;
   node *head, *tail;
   int closed;
 } chan;
@@ -19,15 +19,15 @@ typedef struct { chan *send_ch, *recv_ch; } endpoint;
 typedef struct { chan g2h, h2g; endpoint he, ge; } loop_state;
 
 static void chan_init(chan *c) {
-  pthread_mutex_init(&c->mu, NULL);
-  pthread_cond_init(&c->cond, NULL);
+  mb_mutex_init(&c->mu);
+  mb_cond_init(&c->cond);
   c->head = c->tail = NULL;
   c->closed = 0;
 }
 static void chan_destroy(chan *c) {
   for (node *n = c->head; n; ) { node *x = n->next; free(n->buf); free(n); n = x; }
-  pthread_mutex_destroy(&c->mu);
-  pthread_cond_destroy(&c->cond);
+  mb_mutex_destroy(&c->mu);
+  mb_cond_destroy(&c->cond);
 }
 static mb_err chan_push(chan *c, const void *buf, size_t len) {
   node *n = calloc(1, sizeof *n);
@@ -36,31 +36,31 @@ static mb_err chan_push(chan *c, const void *buf, size_t len) {
   if (!n->buf) { free(n); return MB_FAIL(MB_ERR_INTERNAL, "oom"); }
   memcpy(n->buf, buf, len);
   n->len = len;
-  pthread_mutex_lock(&c->mu);
-  if (c->closed) { pthread_mutex_unlock(&c->mu); free(n->buf); free(n); return MB_FAIL(MB_ERR_IO, "channel closed"); }
+  mb_mutex_lock(&c->mu);
+  if (c->closed) { mb_mutex_unlock(&c->mu); free(n->buf); free(n); return MB_FAIL(MB_ERR_IO, "channel closed"); }
   if (c->tail) c->tail->next = n; else c->head = n;
   c->tail = n;
-  pthread_cond_signal(&c->cond);
-  pthread_mutex_unlock(&c->mu);
+  mb_cond_signal(&c->cond);
+  mb_mutex_unlock(&c->mu);
   return MB_OK;
 }
 static mb_err chan_pop(chan *c, void **buf, size_t *len) {
-  pthread_mutex_lock(&c->mu);
-  while (!c->head && !c->closed) pthread_cond_wait(&c->cond, &c->mu);
-  if (!c->head) { pthread_mutex_unlock(&c->mu); return MB_FAIL(MB_ERR_IO, "channel closed"); }
+  mb_mutex_lock(&c->mu);
+  while (!c->head && !c->closed) mb_cond_wait(&c->cond, &c->mu);
+  if (!c->head) { mb_mutex_unlock(&c->mu); return MB_FAIL(MB_ERR_IO, "channel closed"); }
   node *n = c->head;
   c->head = n->next;
   if (!c->head) c->tail = NULL;
-  pthread_mutex_unlock(&c->mu);
+  mb_mutex_unlock(&c->mu);
   *buf = n->buf; *len = n->len;
   free(n);
   return MB_OK;
 }
 static void chan_close(chan *c) {
-  pthread_mutex_lock(&c->mu);
+  mb_mutex_lock(&c->mu);
   c->closed = 1;
-  pthread_cond_broadcast(&c->cond);
-  pthread_mutex_unlock(&c->mu);
+  mb_cond_broadcast(&c->cond);
+  mb_mutex_unlock(&c->mu);
 }
 
 static mb_err ep_send(void *ctx, const void *buf, size_t len) { return chan_push(((endpoint *)ctx)->send_ch, buf, len); }

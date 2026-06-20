@@ -29,8 +29,8 @@
 #include "app/platform.h"            /* native host glue (exe path, dialogs) — one impl per OS */
 
 #ifdef MB_WITH_SHARE
-#include <pthread.h>
 #include <stdatomic.h>
+#include "support/mb_thread.h"     /* portable thread for the accept loop (pthread/Win32) */
 #include "share/iroh.h"            /* host bind/accept + guest connect (iroh QUIC) */
 #include "share/share.h"           /* mb_share_serve (host) / mb_share_call (guest) */
 
@@ -46,7 +46,7 @@ struct app_share {
   mb_store          *ro;          /* read-only book handle the serve loop owns */
   char               addr[1024];  /* dialable address string — what the owner sends */
   char               key[80];     /* base32 node id — a short fingerprint to confirm */
-  pthread_t          thread;
+  mb_thread          thread;
   int                started;     /* endpoint bound + accept loop running */
   atomic_int         serving;     /* start→1, stop→0; the accept loop's gate */
   atomic_long        guests;      /* total guests served (status display) */
@@ -173,12 +173,12 @@ static char *share_start(struct app_ctx *c) {
   c->share.ep = ep;
   c->share.ro = ro;
   atomic_store(&c->share.serving, 1);
-  if (pthread_create(&c->share.thread, NULL, share_loop, c) != 0) {
+  if (mb_thread_create(&c->share.thread, share_loop, c) != 0) {
     mb_share_iroh_endpoint_free(ep); mb_store_close(ro);
     c->share.ep = NULL; c->share.ro = NULL;
     return json_err(MB_ERR_INTERNAL, "could not start the share thread");
   }
-  pthread_detach(c->share.thread);
+  mb_thread_detach(c->share.thread);
   c->share.started = 1;
   return share_status_json(c);
 }
