@@ -33,4 +33,15 @@ int mb_platform_claude_config_path(char *out, size_t out_n);
  *   -1  error      — `out` holds a human-readable message */
 int mb_platform_save_file(const char *suggested, const char *content, char *out, size_t out_n);
 
+/* Install the native edit/quit keyboard shortcuts for the app window:
+ *   Copy   ⌘C / Ctrl+C      Paste  ⌘V / Ctrl+V      Quit/Close  ⌘Q / Ctrl+Q
+ * plus the rest of the standard edit set (Cut/Select All/Undo) on platforms that
+ * surface a menu. macOS: a WKWebView has no working Copy/Paste until an Edit menu
+ * wires the `copy:`/`paste:` responder selectors, and Quit needs a `terminate:`
+ * item — this builds that main menu. Windows (WebView2): Copy/Paste are native in
+ * text fields, so the impl only needs to add a Ctrl+Q accelerator. Call once, on
+ * the UI thread, after the webview is created and before the run loop starts.
+ * `app_name` labels the macOS app menu (falls back to "Money Books" if NULL). */
+void mb_platform_install_menu(const char *app_name);
+
 #endif /* MB_APP_PLATFORM_H */

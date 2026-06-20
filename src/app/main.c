@@ -466,6 +466,10 @@ int main(int argc, char **argv) {
   webview_t w = webview_create(1, NULL);
   c.w = w;
 
+  /* Standard edit/quit shortcuts (⌘/Ctrl + C/V/Q). The webview ships no menu, so
+   * copy/paste in text fields and ⌘Q wouldn't work without this. */
+  mb_platform_install_menu("Money Books");
+
   char title[160] = "Money Books";
   if (c.s) { char nm[128] = ""; if (mb_book_company_name(c.s, nm, sizeof nm) == MB_OK && nm[0]) snprintf(title, sizeof title, "%s — Money Books", nm); }
   webview_set_title(w, title);

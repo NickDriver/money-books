@@ -31,6 +31,55 @@ int mb_platform_claude_config_path(char *out, size_t out_n) {
   return 0;
 }
 
+/* Build the standard main menu so ⌘C/⌘V/⌘X/⌘A reach the focused WKWebView field
+ * (they ride the first-responder selectors cut:/copy:/paste:/selectAll:) and ⌘Q
+ * quits via terminate:. The vendored webview library creates the NSApplication but
+ * sets no menu, so without this the shortcuts are dead. */
+void mb_platform_install_menu(const char *app_name) {
+  @autoreleasepool {
+    NSApplication *app = [NSApplication sharedApplication];   /* already created by webview */
+    NSString *name = (app_name && app_name[0])
+                       ? [NSString stringWithUTF8String:app_name] : @"Money Books";
+
+    NSMenu *menubar = [[NSMenu alloc] init];
+
+    /* App menu — About / Hide / Quit (⌘Q) */
+    NSMenuItem *appItem = [[NSMenuItem alloc] init];
+    [menubar addItem:appItem];
+    NSMenu *appMenu = [[NSMenu alloc] init];
+    [appMenu addItemWithTitle:[@"About " stringByAppendingString:name]
+                       action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    [appMenu addItemWithTitle:[@"Hide " stringByAppendingString:name]
+                       action:@selector(hide:) keyEquivalent:@"h"];
+    NSMenuItem *hideOthers = [appMenu addItemWithTitle:@"Hide Others"
+                       action:@selector(hideOtherApplications:) keyEquivalent:@"h"];
+    [hideOthers setKeyEquivalentModifierMask:(NSEventModifierFlagOption | NSEventModifierFlagCommand)];
+    [appMenu addItemWithTitle:@"Show All" action:@selector(unhideAllApplications:) keyEquivalent:@""];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    [appMenu addItemWithTitle:[@"Quit " stringByAppendingString:name]
+                       action:@selector(terminate:) keyEquivalent:@"q"];   /* ⌘Q = close */
+    [appItem setSubmenu:appMenu];
+
+    /* Edit menu — Undo/Redo, Cut (⌘X), Copy (⌘C), Paste (⌘V), Select All (⌘A) */
+    NSMenuItem *editItem = [[NSMenuItem alloc] init];
+    [menubar addItem:editItem];
+    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+    [editMenu addItemWithTitle:@"Undo" action:@selector(undo:) keyEquivalent:@"z"];
+    NSMenuItem *redo = [editMenu addItemWithTitle:@"Redo" action:@selector(redo:) keyEquivalent:@"z"];
+    [redo setKeyEquivalentModifierMask:(NSEventModifierFlagShift | NSEventModifierFlagCommand)];
+    [editMenu addItem:[NSMenuItem separatorItem]];
+    [editMenu addItemWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@"x"];
+    [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
+    [editMenu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
+    [editMenu addItem:[NSMenuItem separatorItem]];
+    [editMenu addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
+    [editItem setSubmenu:editMenu];
+
+    [app setMainMenu:menubar];
+  }
+}
+
 int mb_platform_save_file(const char *suggested, const char *content, char *out, size_t out_n) {
   if (out && out_n) out[0] = '\0';
   @autoreleasepool {
