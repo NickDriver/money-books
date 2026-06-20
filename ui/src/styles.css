@@ -32,6 +32,8 @@ h1 { font-size: 22px; margin: 0 0 20px; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }
 .card .label { color: var(--muted); font-size: 13px; }
+/* card header: title left, an action (e.g. export) in the right corner */
+.card-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
 .card .value { font-size: 26px; font-weight: 650; margin-top: 6px; }
 .card.hero { grid-column: span 2; }
 .card.hero .value { font-size: 40px; }
