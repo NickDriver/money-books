@@ -7,6 +7,7 @@
 #include "../account/account.h"
 #include "../item/item.h"
 #include "../report/report.h"
+#include "../export/export.h"
 #include "../journal/journal.h"
 #include "../counterparty/counterparty.h"
 #include "../invoice/invoice.h"
@@ -297,6 +298,42 @@ static mb_err h_report_ledger(mb_store *s, const cJSON *a, cJSON **res) {
   }
   free(rows);
   return MB_OK;
+}
+
+/* ---- export handlers (read-only; CSV for accountant sharing) ---- */
+static mb_err export_result(cJSON **res, const char *filename, char *csv) {
+  *res = cJSON_CreateObject();
+  cJSON_AddStringToObject(*res, "filename", filename);
+  cJSON_AddStringToObject(*res, "mime", "text/csv");
+  cJSON_AddStringToObject(*res, "content", csv);   /* duplicated by cJSON */
+  free(csv);
+  return MB_OK;
+}
+
+static mb_err h_export_trial_balance(mb_store *s, const cJSON *a, cJSON **res) {
+  char *csv = NULL;
+  MB_TRY(mb_export_trial_balance_csv(s, jstr(a, "as_of"), &csv));
+  return export_result(res, "trial_balance.csv", csv);
+}
+static mb_err h_export_pnl(mb_store *s, const cJSON *a, cJSON **res) {
+  char *csv = NULL;
+  MB_TRY(mb_export_pnl_csv(s, jstr(a, "from"), jstr(a, "to"), &csv));
+  return export_result(res, "profit_and_loss.csv", csv);
+}
+static mb_err h_export_balance_sheet(mb_store *s, const cJSON *a, cJSON **res) {
+  char *csv = NULL;
+  MB_TRY(mb_export_balance_sheet_csv(s, jstr(a, "as_of"), &csv));
+  return export_result(res, "balance_sheet.csv", csv);
+}
+static mb_err h_export_general_ledger(mb_store *s, const cJSON *a, cJSON **res) {
+  char *csv = NULL;
+  MB_TRY(mb_export_general_ledger_csv(s, jstr(a, "from"), jstr(a, "to"), &csv));
+  return export_result(res, "general_ledger.csv", csv);
+}
+static mb_err h_export_journal(mb_store *s, const cJSON *a, cJSON **res) {
+  char *csv = NULL;
+  MB_TRY(mb_export_journal_csv(s, jstr(a, "from"), jstr(a, "to"), &csv));
+  return export_result(res, "journal.csv", csv);
 }
 
 /* ---- write handlers ---- */
@@ -739,6 +776,11 @@ mb_err mb_api_dispatch(mb_store *s, const char *method, const char *args_json, c
   else if (!strcmp(method, "report.journal"))      e = h_report_journal(s, args, &res);
   else if (!strcmp(method, "report.category_txns"))e = h_report_category_txns(s, args, &res);
   else if (!strcmp(method, "report.ledger"))       e = h_report_ledger(s, args, &res);
+  else if (!strcmp(method, "export.trial_balance"))e = h_export_trial_balance(s, args, &res);
+  else if (!strcmp(method, "export.pnl"))           e = h_export_pnl(s, args, &res);
+  else if (!strcmp(method, "export.balance_sheet")) e = h_export_balance_sheet(s, args, &res);
+  else if (!strcmp(method, "export.general_ledger"))e = h_export_general_ledger(s, args, &res);
+  else if (!strcmp(method, "export.journal"))       e = h_export_journal(s, args, &res);
   else if (!strcmp(method, "transaction.post"))    e = h_transaction_post(s, args, &res);
   else if (!strcmp(method, "income.record"))       e = h_income_record(s, args, &res);
   else if (!strcmp(method, "expense.record"))      e = h_expense_record(s, args, &res);
@@ -862,6 +904,34 @@ TEST(api, pnl_report) {
   ASSERT_EQ_INT((long)cJSON_GetObjectItem(j, "net")->valuedouble, 80000);
   cJSON_Delete(j);
   free(r);
+  mb_store_close(s);
+}
+
+TEST(api, export_csv_through_dispatch) {
+  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
+  char bank[40], income[40];
+  mb_account_new b = {.code="1000", .name="Bank", .type=MB_ACCT_ASSET, .role=MB_ROLE_ACCOUNT};
+  mb_account_new i = {.code="4000", .name="Income", .type=MB_ACCT_INCOME, .role=MB_ROLE_CATEGORY};
+  ASSERT_OK(mb_account_create(s, &b, bank));
+  ASSERT_OK(mb_account_create(s, &i, income));
+  mb_posting_in p[] = {{.account_id=bank, .amount=80000}, {.account_id=income, .amount=-80000}};
+  char e[40]; ASSERT_OK(mb_journal_post(s, "2026-05-01", "rev", MB_SRC_USER, p, 2, e));
+
+  char *r = NULL;
+  ASSERT_OK(mb_api_dispatch(s, "export.trial_balance", "{}", &r));
+  cJSON *j = cJSON_Parse(r);
+  ASSERT_STR_EQ(cJSON_GetObjectItem(j, "filename")->valuestring, "trial_balance.csv");
+  ASSERT_STR_EQ(cJSON_GetObjectItem(j, "mime")->valuestring, "text/csv");
+  const char *csv = cJSON_GetObjectItem(j, "content")->valuestring;
+  ASSERT_TRUE(strstr(csv, "Account Code,Account Name,Type,Debit,Credit") != NULL);
+  ASSERT_TRUE(strstr(csv, ",TOTAL,800.00,800.00\n") != NULL);
+  cJSON_Delete(j); free(r);
+
+  /* general ledger reaches the postings too */
+  ASSERT_OK(mb_api_dispatch(s, "export.general_ledger", "{}", &r));
+  j = cJSON_Parse(r);
+  ASSERT_TRUE(strstr(cJSON_GetObjectItem(j, "content")->valuestring, "rev") != NULL);
+  cJSON_Delete(j); free(r);
   mb_store_close(s);
 }
 
