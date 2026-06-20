@@ -148,7 +148,15 @@ function mock(method, args) {
     case 'book.status': return { onboarded: true, account_count: 3, company_name: 'Acme LLC' }
     case 'book.onboard': return { ok: true }
     case 'book.set_name': return { ok: true }
-    case 'app.book_current': return { path: '/Users/you/Library/Application Support/MoneyBooks/Acme_LLC.sqlite', name: 'Acme LLC' }
+    case 'app.book_current': return { path: '/Users/you/Library/Application Support/MoneyBooks/Acme_LLC.sqlite', name: 'Acme LLC', read_only: false }
+    case 'app.share_status': return { available: true, sharing: false }
+    case 'app.share_start':
+      return { available: true, sharing: true, guests: 0,
+        key: 'demo0fingerprint',
+        address: 'endpointdemo000000000000000000000000000000000000000000000000000000000000000000' }
+    case 'app.share_stop': return { available: true, sharing: false, key: 'demo0fingerprint', address: 'endpointdemo000000000000000000000000000000000000000000000000000000000000000000' }
+    case 'app.share_connect': return { ok: true }
+    case 'app.share_disconnect': return { ok: true }
     case 'app.book_list':
       return { books: [
         { path: '/Users/you/Library/Application Support/MoneyBooks/Acme_LLC.sqlite', name: 'Acme LLC', last_opened: 1781000000, current: true },

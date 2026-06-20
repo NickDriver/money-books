@@ -107,12 +107,14 @@ APP_C := $(ENGINE_SRC) src/app/main.c src/app/savepanel.m
 ui:
 	cd ui && npm install --silent && npm run build
 
+# The shipped app includes live read-only sharing, so it compiles with -DMB_WITH_SHARE and
+# links the iroh staticlib (built by share-lib). This is the app's lone Rust dependency.
 .PHONY: app
-app: ui | $(BUILD)
+app: ui share-lib | $(BUILD)
 	@test -f $(WV)/core/src/webview.cc || { echo ">> run scripts/fetch_webview.sh first"; exit 1; }
 	clang++ -std=c++17 -DWEBVIEW_STATIC -I$(WV)/core/include -O2 -c $(WV)/core/src/webview.cc -o $(BUILD)/webview.o
-	clang -std=c11 -DWEBVIEW_STATIC $(INC) -I$(WV)/core/include -O2 $(APP_C) $(BUILD)/webview.o \
-	  $(LDLIBS) -lc++ -framework WebKit -framework Cocoa -o $(BUILD)/MoneyBooks
+	clang -std=c11 -DWEBVIEW_STATIC -DMB_WITH_SHARE $(INC) -I$(WV)/core/include -I$(IROH_DIR) -O2 $(APP_C) $(BUILD)/webview.o \
+	  $(IROH_LIB) $(LDLIBS) -lc++ -framework WebKit -framework Cocoa $(IROH_NATIVE) -o $(BUILD)/MoneyBooks
 	@echo "built $(BUILD)/MoneyBooks  —  run: ./$(BUILD)/MoneyBooks book.sqlite"
 
 # ---- iroh share transport (Phase 7b-2 — the lone Rust dependency) ----

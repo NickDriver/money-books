@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { invoke, money } from '../api.js'
+import { useReadOnly } from '../readonly.js'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const toCents = (v) => Math.round(parseFloat(v || '0') * 100)
@@ -31,6 +32,7 @@ const KIND = {
 const STATUS_CLASS = { DRAFT: 'st-draft', OPEN: 'st-open', PARTIAL: 'st-partial', PAID: 'st-paid', VOID: 'st-void' }
 
 export default function Invoices() {
+  const readOnly = useReadOnly()
   const [kind, setKind] = useState('invoice')
   const k = KIND[kind]
 
@@ -75,7 +77,7 @@ export default function Invoices() {
           onCancel={() => setView({ mode: 'list' })} />
       ) : (
         <>
-          <button className="primary" style={{ marginBottom: 16 }} onClick={() => setView({ mode: 'new' })}>+ New {k.noun}</button>
+          {!readOnly && <button className="primary" style={{ marginBottom: 16 }} onClick={() => setView({ mode: 'new' })}>+ New {k.noun}</button>}
           <table>
             <thead>
               <tr><th>Number</th><th>{k.who}</th><th>Issued</th><th>Due</th><th>Status</th><th className="num">Total</th></tr>
@@ -101,6 +103,7 @@ export default function Invoices() {
 }
 
 function Detail({ k, id, accounts, counterparties, items, onCounterparties, onBack }) {
+  const readOnly = useReadOnly()
   const [doc, setDoc] = useState(null)
   const [editing, setEditing] = useState(false)
   const [paying, setPaying] = useState(false)
@@ -179,6 +182,7 @@ function Detail({ k, id, accounts, counterparties, items, onCounterparties, onBa
         </p>
       )}
 
+      {!readOnly && (
       <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap', alignItems: 'center' }}>
         {isDraft && <button className="btn-save filled" onClick={() => setEditing(true)}>Edit</button>}
         {payable && <button className="btn-save filled" onClick={() => setPaying(true)}>Record payment</button>}
@@ -192,6 +196,7 @@ function Detail({ k, id, accounts, counterparties, items, onCounterparties, onBa
           </>
         )}
       </div>
+      )}
       {isDraft && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
         Edit freely while it's a draft. Once {k.postVerb.toLowerCase()}d it locks — corrections are made with a new {k.noun} or by voiding.</p>}
       {isOpen && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>

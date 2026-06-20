@@ -16,6 +16,8 @@ export default function Launcher({ hasCurrent, onCancel }) {
   const [openPath, setOpenPath] = useState('')
   const [confirmPath, setConfirmPath] = useState(null) // book pending "remove from list"
   const [mcp, setMcp] = useState(null) // { book, info } | { book, error } | { book, loading:true }
+  const [connecting, setConnecting] = useState(false) // guest: paste a share address
+  const [addr, setAddr] = useState('')
 
   function reloadList() {
     invoke('app.book_list').then((r) => setBooks(r.books || [])).catch((e) => setErr(String(e)))
@@ -51,6 +53,13 @@ export default function Launcher({ hasCurrent, onCancel }) {
     setMcp({ book: b, loading: true })
     try { const info = await invoke('app.mcp_info', { path: b.path }); setMcp({ book: b, info }) }
     catch (e) { setMcp({ book: b, error: String(e) }) }
+  }
+  async function connectShared() {
+    const a = addr.trim()
+    if (!a) { setErr('Paste the share address you were given'); return }
+    setBusy(true); setErr(null)
+    try { await invoke('app.share_connect', { address: a }); window.location.reload() }
+    catch (e) { setErr(String(e)); setBusy(false) }
   }
 
   return (
@@ -97,6 +106,7 @@ export default function Launcher({ hasCurrent, onCancel }) {
         {!creating ? (
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn-save filled" onClick={() => setCreating(true)}>+ New company</button>
+            <button className="btn-save outline" onClick={() => { setConnecting((v) => !v); setErr(null) }}>⇆ Connect to a shared book</button>
             {hasCurrent && <button className="btn-save outline" onClick={onCancel}>Cancel</button>}
           </div>
         ) : (
@@ -112,6 +122,21 @@ export default function Launcher({ hasCurrent, onCancel }) {
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
               <button className="btn-save filled" disabled={busy} onClick={createBook}>Create &amp; open</button>
               <button className="btn-save outline" disabled={busy} onClick={() => setCreating(false)}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {connecting && (
+          <div className="card" style={{ padding: 16, marginTop: 12 }}>
+            <strong>Connect to a shared book</strong>
+            <p className="muted" style={{ fontSize: 13, margin: '6px 0 8px' }}>
+              Paste the address someone shared with you. You’ll get a live, read-only view of their book — view reports and export them.
+            </p>
+            <textarea rows={3} style={{ width: '100%', resize: 'vertical', fontFamily: 'monospace', fontSize: 12.5 }}
+              placeholder="endpoint…" value={addr} onChange={(e) => setAddr(e.target.value)} />
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <button className="btn-save filled" disabled={busy || !addr.trim()} onClick={connectShared}>Connect</button>
+              <button className="btn-save outline" disabled={busy} onClick={() => { setConnecting(false); setAddr('') }}>Cancel</button>
             </div>
           </div>
         )}

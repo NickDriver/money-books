@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { invoke, usingBridge } from './api.js'
+import { ReadOnlyContext } from './readonly.js'
 import Dashboard from './components/Dashboard.jsx'
 import Record from './components/Record.jsx'
 import Transactions from './components/Transactions.jsx'
@@ -9,6 +10,7 @@ import Items from './components/Items.jsx'
 import Reports from './components/Reports.jsx'
 import Wizard from './components/Wizard.jsx'
 import Launcher from './components/Launcher.jsx'
+import ShareModal from './components/Share.jsx'
 
 const TABS = [
   { key: 'dashboard', label: 'Dashboard', el: Dashboard },
@@ -20,53 +22,78 @@ const TABS = [
   { key: 'reports', label: 'Reports', el: Reports },
 ]
 
+// A guest (read-only) sees only the view tabs — the write-oriented Record/Accounts/Items
+// tabs are hidden, and the remaining tabs hide their write controls (ReadOnlyContext).
+const GUEST_TABS = new Set(['dashboard', 'transactions', 'invoices', 'reports'])
+
 export default function App() {
-  const [current, setCurrent] = useState(undefined) // undefined=checking, null=none, {path,name}=open
+  const [current, setCurrent] = useState(undefined) // undefined=checking, null=none, {path,name,read_only}=open
   const [showLauncher, setShowLauncher] = useState(false)
+  const [showShare, setShowShare] = useState(false)
   const [onboarded, setOnboarded] = useState(null)
   const [nav, setNav] = useState({ tab: 'dashboard', params: {} })
 
   useEffect(() => {
     invoke('app.book_current')
-      .then((r) => setCurrent(r.path ? { path: r.path, name: r.name } : null))
+      .then((r) => setCurrent(r.path || r.read_only ? { path: r.path, name: r.name, read_only: !!r.read_only } : null))
       .catch(() => setCurrent(null))
   }, [])
 
+  const isGuest = !!current && !!current.read_only
+
   useEffect(() => {
     if (!current) return
+    if (isGuest) { setOnboarded(true); return } // a guest never onboards — the host's book already exists
     invoke('book.status')
       .then((r) => setOnboarded(!!r.onboarded))
       .catch(() => setOnboarded(true))
-  }, [current])
+  }, [current, isGuest])
+
+  async function disconnect() {
+    try { await invoke('app.share_disconnect') } catch { /* ignore */ }
+    window.location.reload()
+  }
 
   if (current === undefined) return null
   if (showLauncher || current === null) return <Launcher hasCurrent={!!current} onCancel={() => setShowLauncher(false)} />
   if (onboarded === null) return null
   if (!onboarded) return <Wizard onDone={() => setOnboarded(true)} />
 
+  const tabs = isGuest ? TABS.filter((t) => GUEST_TABS.has(t.key)) : TABS
   const go = (tab, params = {}) => setNav({ tab, params })
-  const Active = TABS.find((t) => t.key === nav.tab).el
+  const activeTab = tabs.find((t) => t.key === nav.tab) || tabs[0]
+  const Active = activeTab.el
 
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          Money Books
-          {current.name && <div className="company" title={current.path}>{current.name}</div>}
-        </div>
-        <nav className="nav">
-          {TABS.map((t) => (
-            <button key={t.key} className={t.key === nav.tab ? 'active' : ''} onClick={() => go(t.key)}>
-              {t.label}
-            </button>
-          ))}
-        </nav>
-        <button className="nav-switch" onClick={() => setShowLauncher(true)}>⇄ Switch company</button>
-      </aside>
-      <main className="main">
-        {!usingBridge && <div className="banner">Preview mode — showing mock data (native engine not attached)</div>}
-        <Active go={go} initialFilter={nav.params.filter || 'all'} />
-      </main>
-    </div>
+    <ReadOnlyContext.Provider value={isGuest}>
+      <div className="app">
+        <aside className="sidebar">
+          <div className="brand">
+            Money Books
+            {current.name && <div className="company" title={current.path || ''}>{current.name}</div>}
+            {isGuest && <div className="tag st-open" style={{ marginTop: 6, display: 'inline-block' }}>read-only</div>}
+          </div>
+          <nav className="nav">
+            {tabs.map((t) => (
+              <button key={t.key} className={t.key === activeTab.key ? 'active' : ''} onClick={() => go(t.key)}>
+                {t.label}
+              </button>
+            ))}
+          </nav>
+          {isGuest
+            ? <button className="nav-switch" onClick={disconnect}>⤬ Disconnect</button>
+            : <>
+                <button className="nav-switch" onClick={() => setShowShare(true)}>⇆ Share book</button>
+                <button className="nav-switch" onClick={() => setShowLauncher(true)}>⇄ Switch company</button>
+              </>}
+        </aside>
+        <main className="main">
+          {!usingBridge && <div className="banner">Preview mode — showing mock data (native engine not attached)</div>}
+          {isGuest && <div className="banner">Shared book — read-only. You can view and export; changes are disabled.</div>}
+          <Active go={go} initialFilter={nav.params.filter || 'all'} />
+        </main>
+        {showShare && <ShareModal onClose={() => setShowShare(false)} />}
+      </div>
+    </ReadOnlyContext.Provider>
   )
 }

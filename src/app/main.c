@@ -30,11 +30,42 @@
 #include "registry/registry.h"
 #include "app/savepanel.h"
 
+#ifdef MB_WITH_SHARE
+#include <pthread.h>
+#include <stdatomic.h>
+#include "share/iroh.h"            /* host bind/accept + guest connect (iroh QUIC) */
+#include "share/share.h"           /* mb_share_serve (host) / mb_share_call (guest) */
+
+/* Host-side sharing: the iroh endpoint is bound once per app session (so the key the owner
+ * sends stays stable); share_start/share_stop just toggle `serving`, which the accept loop
+ * consults — when off, newly accepted guests are closed immediately and no book data flows.
+ * The endpoint and its read-only handle are released at process exit. Closing the endpoint
+ * from the UI thread while the loop is blocked in accept would be a use-after-free (iroh's
+ * endpoint_close consumes the endpoint), so we never tear it down mid-session — toggling the
+ * gate is the safe equivalent and keeps the same node key for reconnects. */
+struct app_share {
+  mb_share_endpoint *ep;          /* bound listener (NULL until first share_start) */
+  mb_store          *ro;          /* read-only book handle the serve loop owns */
+  char               addr[1024];  /* dialable address string — what the owner sends */
+  char               key[80];     /* base32 node id — a short fingerprint to confirm */
+  pthread_t          thread;
+  int                started;     /* endpoint bound + accept loop running */
+  atomic_int         serving;     /* start→1, stop→0; the accept loop's gate */
+  atomic_long        guests;      /* total guests served (status display) */
+};
+#endif
+
 struct app_ctx {
   webview_t w;
   mb_store *s;                 /* current book, or NULL when on the launcher */
   char      book_path[1024];   /* path of the current book ("" if none) */
   char      reg_path[1024];    /* the registry JSON file */
+#ifdef MB_WITH_SHARE
+  struct app_share   share;        /* owner hosting a read-only share of c->s */
+  mb_share_transport remote;       /* guest mode: live connection to a host */
+  int                remote_active;
+  char               remote_addr[1024];
+#endif
 };
 
 /* ---- small JSON helpers ---- */
@@ -97,6 +128,103 @@ static void mcp_binary_path(char *buf, size_t n) {
   snprintf(buf, n, "%s/money-books-mcp", dirname(tmp));
 }
 
+/* ---- live read-only sharing (Phase 7b-3) ---- */
+#ifdef MB_WITH_SHARE
+/* Accept guests forever on the host endpoint. Serves each only while the gate is open;
+ * when sharing is stopped, a connecting guest is accepted and immediately closed (clean EOF,
+ * no data). Runs detached for the app session — the OS reclaims the endpoint at exit. */
+static void *share_loop(void *arg) {
+  struct app_ctx *c = arg;
+  for (;;) {
+    mb_share_transport t;
+    if (mb_share_iroh_accept(c->share.ep, &t) != MB_OK) {
+      usleep(100000);   /* transient accept error (stray datagram); back off, keep listening */
+      continue;
+    }
+    if (!atomic_load(&c->share.serving)) { t.close(t.ctx); continue; }  /* stopped → refuse */
+    atomic_fetch_add(&c->share.guests, 1);
+    (void)mb_share_serve(c->share.ro, &t);   /* returns when this guest disconnects */
+    t.close(t.ctx);
+  }
+  return NULL;
+}
+
+/* Build the {sharing,available,address,key,guests} status the UI's Share panel renders. */
+static char *share_status_json(struct app_ctx *c) {
+  cJSON *o = cJSON_CreateObject();
+  cJSON_AddBoolToObject(o, "available", 1);
+  cJSON_AddBoolToObject(o, "sharing", atomic_load(&c->share.serving));
+  if (c->share.started) {
+    cJSON_AddStringToObject(o, "address", c->share.addr);
+    cJSON_AddStringToObject(o, "key", c->share.key);
+    cJSON_AddNumberToObject(o, "guests", (double)atomic_load(&c->share.guests));
+  }
+  return json_take(o);
+}
+
+static char *share_start(struct app_ctx *c) {
+  if (!c->s || !c->book_path[0]) return json_err(MB_ERR_UNSUPPORTED, "open a book before sharing it");
+  if (c->share.started) {                 /* re-enable on the existing endpoint (same key) */
+    atomic_store(&c->share.serving, 1);
+    return share_status_json(c);
+  }
+  mb_store *ro = NULL;
+  mb_err re = mb_store_open_readonly(c->book_path, &ro);   /* the loop's own R/O handle */
+  if (re != MB_OK) return json_err(re, NULL);
+  mb_share_endpoint *ep = NULL;
+  mb_err e = mb_share_iroh_bind(&ep, c->share.addr, sizeof c->share.addr,
+                                c->share.key, sizeof c->share.key);
+  if (e != MB_OK) { mb_store_close(ro); return json_err(e, NULL); }
+  c->share.ep = ep;
+  c->share.ro = ro;
+  atomic_store(&c->share.serving, 1);
+  if (pthread_create(&c->share.thread, NULL, share_loop, c) != 0) {
+    mb_share_iroh_endpoint_free(ep); mb_store_close(ro);
+    c->share.ep = NULL; c->share.ro = NULL;
+    return json_err(MB_ERR_INTERNAL, "could not start the share thread");
+  }
+  pthread_detach(c->share.thread);
+  c->share.started = 1;
+  return share_status_json(c);
+}
+
+static char *share_stop(struct app_ctx *c) {
+  atomic_store(&c->share.serving, 0);     /* the loop refuses new guests from here on */
+  return share_status_json(c);
+}
+
+/* Guest: dial a host's address, enter remote read-only mode (any local book is closed so the
+ * window is purely the shared view). Subsequent non-app calls forward over iroh in on_invoke. */
+static char *share_connect(struct app_ctx *c, const cJSON *a) {
+  const char *addr = a ? sget(a, "address") : NULL;
+  if (!addr || !addr[0]) return json_err(MB_ERR_INVALID_ARG, "a share address is required");
+  if (c->remote_active) return json_err(MB_ERR_UNSUPPORTED, "already connected to a shared book");
+  mb_err e = mb_share_iroh_connect(addr, &c->remote);
+  if (e != MB_OK) return json_err(e, NULL);
+  c->remote_active = 1;
+  snprintf(c->remote_addr, sizeof c->remote_addr, "%s", addr);
+  if (c->s) { mb_store_close(c->s); c->s = NULL; }
+  c->book_path[0] = '\0';
+  cJSON *o = cJSON_CreateObject();
+  cJSON_AddBoolToObject(o, "ok", 1);
+  return json_take(o);
+}
+
+static char *share_disconnect(struct app_ctx *c) {
+  if (c->remote_active) { c->remote.close(c->remote.ctx); c->remote_active = 0; }
+  cJSON *o = cJSON_CreateObject();
+  cJSON_AddBoolToObject(o, "ok", 1);
+  return json_take(o);
+}
+#else  /* sharing compiled out: the methods exist but report unavailable */
+static char *share_unavailable(void) {
+  cJSON *o = cJSON_CreateObject();
+  cJSON_AddBoolToObject(o, "available", 0);
+  cJSON_AddBoolToObject(o, "sharing", 0);
+  return json_take(o);
+}
+#endif
+
 /* Shell-level `app.*` methods (book registry + active-store swap). Always returns a malloc'd JSON. */
 static char *shell_dispatch(struct app_ctx *c, const char *method, const char *args_json) {
   cJSON *a = cJSON_Parse(args_json);
@@ -104,10 +232,21 @@ static char *shell_dispatch(struct app_ctx *c, const char *method, const char *a
 
   if (!strcmp(method, "app.book_current")) {
     cJSON *o = cJSON_CreateObject();
+#ifdef MB_WITH_SHARE
+    if (c->remote_active) {                 /* guest mode: a live read-only view of a host's book */
+      cJSON_AddNullToObject(o, "path");
+      cJSON_AddStringToObject(o, "name", "Shared book");
+      cJSON_AddBoolToObject(o, "read_only", 1);
+      out = json_take(o);
+      cJSON_Delete(a);
+      return out;
+    }
+#endif
     if (c->s) {
       char nm[128] = ""; (void)mb_book_company_name(c->s, nm, sizeof nm);
       cJSON_AddStringToObject(o, "path", c->book_path);
       cJSON_AddStringToObject(o, "name", nm);
+      cJSON_AddBoolToObject(o, "read_only", 0);
     } else {
       cJSON_AddNullToObject(o, "path");
     }
@@ -179,6 +318,37 @@ static char *shell_dispatch(struct app_ctx *c, const char *method, const char *a
       else { cJSON *o = cJSON_CreateObject(); cJSON_AddBoolToObject(o, "ok", 1); out = json_take(o); }
     }
 
+  } else if (!strcmp(method, "app.share_start")) {
+#ifdef MB_WITH_SHARE
+    out = share_start(c);
+#else
+    out = share_unavailable();
+#endif
+  } else if (!strcmp(method, "app.share_stop")) {
+#ifdef MB_WITH_SHARE
+    out = share_stop(c);
+#else
+    out = share_unavailable();
+#endif
+  } else if (!strcmp(method, "app.share_status")) {
+#ifdef MB_WITH_SHARE
+    out = share_status_json(c);
+#else
+    out = share_unavailable();
+#endif
+  } else if (!strcmp(method, "app.share_connect")) {
+#ifdef MB_WITH_SHARE
+    out = share_connect(c, a);
+#else
+    out = share_unavailable();
+#endif
+  } else if (!strcmp(method, "app.share_disconnect")) {
+#ifdef MB_WITH_SHARE
+    out = share_disconnect(c);
+#else
+    out = share_unavailable();
+#endif
+
   } else {
     out = json_err(MB_ERR_UNSUPPORTED, "unknown app method");
   }
@@ -211,6 +381,29 @@ static void on_invoke(const char *id, const char *req, void *arg) {
     cJSON_Delete(params);
     return;
   }
+
+#ifdef MB_WITH_SHARE
+  /* guest mode: forward every engine call over iroh to the host's read-only dispatch.
+   * webview callbacks are serialized on the UI thread, so calls never interleave on the
+   * single shared stream. A transport failure means the host stopped or the link dropped —
+   * surface it and drop back to disconnected so the UI can return to the launcher. */
+  if (c->remote_active) {
+    char *result = NULL;
+    mb_err e = mb_share_call(&c->remote, method, args, &result);
+    if (e != MB_OK) {
+      c->remote.close(c->remote.ctx);
+      c->remote_active = 0;
+      char *r = json_err(MB_ERR_IO, "lost connection to the shared book");
+      webview_return(w, id, 0, r);
+      free(r); free(result); cJSON_Delete(params);
+      return;
+    }
+    webview_return(w, id, 0, result ? result : "{}");
+    free(result);
+    cJSON_Delete(params);
+    return;
+  }
+#endif
 
   /* every other method needs an open book */
   if (!c->s) {
@@ -304,6 +497,11 @@ int main(int argc, char **argv) {
 
   webview_run(w);
   webview_destroy(w);
+#ifdef MB_WITH_SHARE
+  if (c.remote_active) c.remote.close(c.remote.ctx);
+  /* the detached share loop + its read-only handle + endpoint are reclaimed at process exit;
+   * we never free the endpoint here (it would race the loop blocked in accept). */
+#endif
   if (c.s) mb_store_close(c.s);
   return 0;
 }
