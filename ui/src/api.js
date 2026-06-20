@@ -25,6 +25,27 @@ export function money(cents) {
 
 export const usingBridge = hasBridge
 
+// Run an export.* method and save the returned CSV. Prefers a native save hook
+// (WKWebView can't honor <a download>); falls back to a Blob download, which is
+// also exactly what the future browser-based accountant viewer uses.
+export async function downloadCsv(method, args = {}) {
+  const res = await invoke(method, args)
+  const { filename = 'export.csv', mime = 'text/csv', content = '' } = res || {}
+  if (typeof window !== 'undefined' && typeof window.mbSaveFile === 'function') {
+    await window.mbSaveFile(filename, content)
+    return filename
+  }
+  const url = URL.createObjectURL(new Blob([content], { type: mime }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+  return filename
+}
+
 // ---- dev mock (browser only) ----
 function mock(method, args) {
   switch (method) {
@@ -108,6 +129,21 @@ function mock(method, args) {
         total: inc ? 250000 : 12000,
       }
     }
+    case 'export.trial_balance':
+      return { filename: 'trial_balance.csv', mime: 'text/csv',
+        content: 'Account Code,Account Name,Type,Debit,Credit\n1000,Business Checking,ASSET,9320.00,0.00\n4000,Consulting Income,INCOME,0.00,12500.00\n6010,Software & Subscriptions,EXPENSE,3180.00,0.00\n,,TOTAL,12500.00,12500.00\n' }
+    case 'export.pnl':
+      return { filename: 'profit_and_loss.csv', mime: 'text/csv',
+        content: 'Section,Account Code,Account Name,Amount\nIncome,4000,Consulting Income,12500.00\nIncome,,Total Income,12500.00\nExpense,6010,Software & Subscriptions,3180.00\nExpense,,Total Expense,3180.00\n,,Net Income,9320.00\n' }
+    case 'export.balance_sheet':
+      return { filename: 'balance_sheet.csv', mime: 'text/csv',
+        content: 'Section,Account Code,Account Name,Amount\nAsset,1000,Business Checking,9320.00\nAsset,,Total Assets,9320.00\nLiability,,Total Liabilities,0.00\nEquity,,Net Income (current period),9320.00\nEquity,,Total Equity + Net Income,9320.00\n,,Total Liabilities + Equity + Net Income,9320.00\n' }
+    case 'export.general_ledger':
+      return { filename: 'general_ledger.csv', mime: 'text/csv',
+        content: 'Account Code,Account Name,Date,Entry,Memo,Amount,Balance\n1000,Business Checking,2026-06-10,e1a2b3c4,Consulting income,12500.00,12500.00\n1000,Business Checking,2026-06-15,d4c3b2a1,"Software, Inc",-3180.00,9320.00\n' }
+    case 'export.journal':
+      return { filename: 'journal.csv', mime: 'text/csv',
+        content: 'Date,Entry,Memo,Source,Status,Flow,Amount\n2026-06-10,e1a2b3c4,Consulting income,USER,POSTED,INCOME,12500.00\n2026-06-15,d4c3b2a1,IDE license,USER,POSTED,EXPENSE,3180.00\n' }
     case 'book.status': return { onboarded: true, account_count: 3, company_name: 'Acme LLC' }
     case 'book.onboard': return { ok: true }
     case 'book.set_name': return { ok: true }
