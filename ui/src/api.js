@@ -120,6 +120,36 @@ function mock(method, args) {
     case 'app.book_create': return { ok: true, path: '/Users/you/Library/Application Support/MoneyBooks/New.sqlite' }
     case 'app.book_open': return { ok: true, path: args.path }
     case 'app.book_forget': return { ok: true }
+    case 'mcp.tools': {
+      const R = (name, description) => ({ name, description, is_write: false, policy: 'PERMIT' })
+      const W = (name, description) => ({ name, description, is_write: true, policy: 'ASK' })
+      const tools = [
+        R('list_accounts', 'List accounts and categories (optionally filtered).'),
+        R('get_account', 'Get one account by id.'),
+        R('list_counterparties', 'List clients/vendors.'),
+        R('get_invoice', 'Get an invoice with its total and status.'),
+        R('list_invoices', 'List all invoices (id, number, counterparty, dates, status, total).'),
+        R('get_bill', 'Get a bill with its total and status.'),
+        R('list_bills', 'List all bills (id, number, vendor, dates, status, total).'),
+        R('report_trial_balance', 'Trial balance as of a date (debits must equal credits).'),
+        R('report_pnl', 'Profit & loss over a date range.'),
+        R('report_balance_sheet', 'Balance sheet as of a date.'),
+        R('report_cash_flow', 'Cash flow over a date range.'),
+        W('create_account', 'Create an account or category.'),
+        W('record_income', 'Record income: debit a deposit account, credit an income category.'),
+        W('record_expense', 'Record an expense: debit an expense category, credit a payment account.'),
+        W('post_transaction', 'Post a balanced journal entry (postings sum to zero).'),
+        W('create_counterparty', 'Create a client or vendor.'),
+        W('create_invoice', 'Create a draft invoice for a counterparty.'),
+        W('add_invoice_line', 'Add a line to a draft invoice (tax line supported).'),
+        W('issue_invoice', 'Issue a draft invoice (posts Dr AR / Cr income).'),
+        W('create_bill', 'Create a draft bill from a vendor.'),
+        W('add_bill_line', 'Add a line to a draft bill.'),
+        W('enter_bill', 'Enter a draft bill (posts Dr expense / Cr AP).'),
+        W('record_payment', 'Record a payment against an invoice or bill.'),
+      ]
+      return { count: tools.length, tools }
+    }
     case 'app.mcp_info':
       return {
         command: '/Users/you/work/money_books/build/money-books-mcp',

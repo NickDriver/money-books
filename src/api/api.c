@@ -14,6 +14,7 @@
 #include "../payment/payment.h"
 #include "../seed/seed.h"
 #include "../book/book.h"
+#include "../mcp/mcp.h"
 
 /* ---- small helpers ---- */
 static const char *jstr(const cJSON *o, const char *key) {
@@ -702,6 +703,16 @@ static mb_err app_setting_set(mb_store *s, const char *k, const char *v) {
   return e;
 }
 
+/* MCP tool catalog for the in-app "what does my MCP expose?" view (not itself an MCP tool). */
+static mb_err h_mcp_tools(mb_store *s, const cJSON *a, cJSON **res) {
+  (void)a;
+  char *cat = NULL;
+  MB_TRY(mb_mcp_tools_catalog(s, &cat));
+  *res = cJSON_Parse(cat);
+  free(cat);
+  return *res ? MB_OK : MB_FAIL(MB_ERR_INTERNAL, "parse catalog");
+}
+
 mb_err mb_api_dispatch(mb_store *s, const char *method, const char *args_json, char **result_json) {
   cJSON *args = (args_json && args_json[0]) ? cJSON_Parse(args_json) : cJSON_CreateObject();
   if (!args) {
@@ -754,6 +765,7 @@ mb_err mb_api_dispatch(mb_store *s, const char *method, const char *args_json, c
   else if (!strcmp(method, "book.status"))         e = h_book_status(s, args, &res);
   else if (!strcmp(method, "book.onboard"))        e = h_book_onboard(s, args, &res);
   else if (!strcmp(method, "book.set_name"))       e = h_book_set_name(s, args, &res);
+  else if (!strcmp(method, "mcp.tools"))           e = h_mcp_tools(s, args, &res);
   else                                             e = MB_FAIL(MB_ERR_UNSUPPORTED, "unknown method '%s'", method);
 
   cJSON_Delete(args);

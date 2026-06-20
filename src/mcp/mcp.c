@@ -100,6 +100,24 @@ mb_err mb_mcp_set_policy(mb_store *s, const char *tool, const char *policy) {
   return e;
 }
 
+mb_err mb_mcp_tools_catalog(mb_store *s, char **json_out) {
+  cJSON *r = cJSON_CreateObject();
+  cJSON *arr = cJSON_AddArrayToObject(r, "tools");
+  for (int i = 0; i < TOOL_COUNT; i++) {
+    char policy[8]; tool_policy(s, &TOOLS[i], policy);
+    cJSON *t = cJSON_CreateObject();
+    cJSON_AddStringToObject(t, "name", TOOLS[i].name);
+    cJSON_AddStringToObject(t, "description", TOOLS[i].description);
+    cJSON_AddBoolToObject(t, "is_write", TOOLS[i].is_write);
+    cJSON_AddStringToObject(t, "policy", policy);
+    cJSON_AddItemToArray(arr, t);
+  }
+  cJSON_AddNumberToObject(r, "count", TOOL_COUNT);
+  *json_out = cJSON_PrintUnformatted(r);
+  cJSON_Delete(r);
+  return *json_out ? MB_OK : MB_FAIL(MB_ERR_INTERNAL, "catalog print failed");
+}
+
 /* ---- method handlers (return a cJSON result object, or NULL) ---- */
 static cJSON *do_initialize(void) {
   cJSON *r = cJSON_CreateObject();
@@ -328,6 +346,27 @@ TEST(mcp, tools_list_has_tools) {
   cJSON_ArrayForEach(it, tools)
     if (!strcmp(cJSON_GetObjectItem(it, "name")->valuestring, "record_income")) found = 1;
   ASSERT_EQ_INT(found, 1);
+  cJSON_Delete(j);
+  mb_store_close(s);
+}
+
+TEST(mcp, tools_catalog) {
+  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
+  char *json = NULL;
+  ASSERT_OK(mb_mcp_tools_catalog(s, &json));
+  cJSON *j = cJSON_Parse(json); free(json);
+  ASSERT(j != NULL);
+  cJSON *tools = cJSON_GetObjectItem(j, "tools");
+  ASSERT_EQ_INT((long)cJSON_GetObjectItem(j, "count")->valuedouble, cJSON_GetArraySize(tools));
+  ASSERT(cJSON_GetArraySize(tools) >= 20);
+  int checked = 0; cJSON *it;
+  cJSON_ArrayForEach(it, tools)
+    if (!strcmp(cJSON_GetObjectItem(it, "name")->valuestring, "record_income")) {
+      ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(it, "is_write")));
+      ASSERT(cJSON_GetObjectItem(it, "policy") != NULL);
+      checked = 1;
+    }
+  ASSERT_EQ_INT(checked, 1);
   cJSON_Delete(j);
   mb_store_close(s);
 }

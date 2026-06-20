@@ -17,4 +17,8 @@ mb_err mb_mcp_handle(mb_store *s, const char *msg_json, char **out_json) MB_MUST
 /* Settings: set a tool's policy ("PERMIT"/"ASK"/"BLOCK"). */
 mb_err mb_mcp_set_policy(mb_store *s, const char *tool, const char *policy) MB_MUST_CHECK;
 
+/* Build a JSON catalog of the MCP tool surface for an in-app "what does my MCP expose?" view:
+ * {"count":N,"tools":[{"name","description","is_write","policy"}...]}. *json_out is malloc'd. */
+mb_err mb_mcp_tools_catalog(mb_store *s, char **json_out) MB_MUST_CHECK;
+
 #endif /* MB_MCP_H */

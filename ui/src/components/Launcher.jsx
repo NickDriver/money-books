@@ -137,6 +137,7 @@ const slug = (s) => 'books-' + String(s || 'company').toLowerCase().replace(/[^a
 function McpModal({ state, onClose }) {
   const { book, info, error, loading } = state
   const [copied, setCopied] = useState(false)
+  const [showTools, setShowTools] = useState(false)
   const name = slug(book.name)
   const entry = info
     ? `"${name}": {\n  "command": "${info.command}",\n  "args": ["${info.book_path}"]\n}`
@@ -165,6 +166,7 @@ function McpModal({ state, onClose }) {
         <p className="muted" style={{ marginTop: 6 }}>
           Each company is one MCP server entry. Add this to Claude Desktop and ask it about <strong>{book.name}</strong>’s books — it uses the same vetted operations the app does.
         </p>
+        <button className="btn-outline" onClick={() => setShowTools(true)} style={{ marginBottom: 14 }}>🔧 View the tools this exposes</button>
 
         {loading && <p>Loading…</p>}
         {error && <p className="neg">{error}</p>}
@@ -186,6 +188,51 @@ function McpModal({ state, onClose }) {
             <p className="muted" style={{ fontSize: 12.5, marginBottom: 0 }}>
               Tip: avoid writing to a company from both the app and Claude at the same moment — use one at a time per book. If you ran <code>make clean</code>, rebuild with <code>make mcp</code> first.
             </p>
+          </>
+        )}
+      </div>
+      {showTools && <McpToolsModal onClose={() => setShowTools(false)} />}
+    </div>
+  )
+}
+
+// Dedicated window: the full MCP tool surface, so the user knows what a connected client can do.
+function McpToolsModal({ onClose }) {
+  const [data, setData] = useState(null)
+  const [err, setErr] = useState(null)
+  useEffect(() => { invoke('mcp.tools').then(setData).catch((e) => setErr(String(e))) }, [])
+
+  const tools = data?.tools || []
+  const reads = tools.filter((t) => !t.is_write)
+  const writes = tools.filter((t) => t.is_write)
+  const Row = (t) => (
+    <div key={t.name} style={{ padding: '7px 0', borderBottom: '1px solid var(--border, #2a2a35)' }}>
+      <div>
+        <code style={{ fontWeight: 600 }}>{t.name}</code>
+        {t.policy === 'BLOCK' && <span className="tag" style={{ marginLeft: 8 }}>blocked (hidden from clients)</span>}
+      </div>
+      <div className="muted" style={{ fontSize: 13 }}>{t.description}</div>
+    </div>
+  )
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 20 }}>
+      <div className="card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 700, width: '100%', maxHeight: '88vh', overflow: 'auto', padding: 22 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+          <h2 style={{ margin: 0 }}>Money Books MCP — tools</h2>
+          <button className="btn-outline" onClick={onClose}>Close</button>
+        </div>
+        <p className="muted" style={{ marginTop: 6 }}>
+          These are the operations a connected client (e.g. Claude Desktop) can use{data ? ` — ${data.count} in total` : ''}. Reads run freely; <strong>every write asks for your approval</strong> before it executes.
+        </p>
+        {err && <p className="neg">{err}</p>}
+        {!data && !err && <p>Loading…</p>}
+        {data && (
+          <>
+            <h3 style={{ marginBottom: 2 }}>Read · {reads.length} <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}>(no approval needed)</span></h3>
+            {reads.map(Row)}
+            <h3 style={{ marginBottom: 2, marginTop: 18 }}>Write · {writes.length} <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}>(each requires your approval)</span></h3>
+            {writes.map(Row)}
           </>
         )}
       </div>
