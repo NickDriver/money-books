@@ -60,31 +60,42 @@ proper bookkeeping fundamentals.
 
 ## 4. Decision Log (confirmed)
 
-> **▶ RESUME HERE (last session 2026-06-17).** **Phases 0–4 COMPLETE + multi-company (D25) + customer/
-> vendor credit (D26) + document lifecycle tightened; Phase 5 core done.** `make test` = **90/90 green,
-> 0 leaks**; `make app` + `make mcp` build clean; published at **github.com/NickDriver/money-books**
-> (public, MIT). The React UI is fully wired (Dashboard, Record, Transactions, Invoices&Bills w/
-> detail+edit+**Apply credit**+**Void**, Accounts&Categories w/ editing+ledger, Items, Reports,
-> Assistant, Settings, company launcher). Latest build details are in the dated BUILD STATUS blocks
-> below (newest first).
+> **▶ RESUME HERE (last session 2026-06-19).** **Phases 0–4 COMPLETE + multi-company (D25) + customer/
+> vendor credit (D26) + document lifecycle tightened; Phase 5 = MCP server only (in-app agent removed).**
+> `make test` = **84/84 green, 0 leaks**; `make app` + `make mcp` + UI build clean; published at
+> **github.com/NickDriver/money-books** (public, MIT). The React UI is wired (Dashboard, Record,
+> Transactions, Invoices&Bills w/ detail+edit+**Apply credit**+**Void**, Accounts&Categories w/
+> editing+ledger, Items, Reports, company launcher). Latest build details are in the dated BUILD STATUS
+> blocks below (newest first).
 >
 > **Test-suite audit (docs/TEST_AUDIT.md) — COMPLETE.** All findings F1–F11 closed; the one real bug
 > it surfaced (Concern C1 — reversed entries not netted out of `category_txns`) is **fixed**. As part
 > of that, the invoice/bill **lifecycle was tightened**: issued documents are immutable (no more
 > reopen-to-draft); corrections are made with new documents or by **Void**. No open audit findings.
 >
-> **NEXT — Phase 5 polish (planned order, all with tests):**
-> 1. **In-app agent Ask-confirmation UI + per-tool-policy settings screen** — the MCP path already
->    enforces Permit/Ask/Block (migration v3 `tool_permission`), but the *in-app* agent currently runs
->    every tool without asking. Add a Settings screen to view/set per-tool policy, and an inline
->    "Allow / Deny" prompt in the Assistant chat when an ASK-policy write tool is about to run.
-> 2. **Reply streaming** (token-by-token) — agent runs on a worker thread already; stream tokens back
->    via `webview_dispatch` instead of one final `webview_return`.
-> 3. **Anthropic-native dialect** in `src/llm` (OpenRouter covers Claude meanwhile).
-> 4. **Embedded HTTP/SSE MCP transport** (today it's stdio only).
+> **Phase 5 — AI = MCP server only.** The in-app sidebar agent was **removed** (see BUILD STATUS
+> 2026-06-19 below): AI access is now solely through the stdio MCP server (the user brings their own
+> LLM client, e.g. Claude Desktop). The engine makes no outbound network calls.
+>
+> **NEXT (optional / later):**
+> 1. **Embedded HTTP/SSE MCP transport** (today it's stdio only) — for HTTP-based MCP clients.
+> 2. **Per-tool-policy settings screen** — surface the existing Permit/Ask/Block (`tool_permission`,
+>    migration v3) in the UI so the user can edit policy that the MCP layer already enforces.
 >
 > Then **Phase 6** (packaging: `.app`, signing/notarization, native NSOpenPanel for "open book",
 > shim, CI) and **Phase 7** (P2P/iroh). Open §15 items: attachments, backup/export UX.
+>
+> **BUILD STATUS (2026-06-19): in-app sidebar agent REMOVED — 84 tests green, 0 leaks.** Deleted the
+> in-app agent feature: `src/agent` (tool-use loop), `src/llm` (OpenAI/OpenRouter via libcurl),
+> `src/redact` (egress pseudonymization), and `src/secret` (Keychain — only held LLM keys, now dead).
+> Dropped API methods `agent.send` + `settings.{list_providers,set_provider,clear_key}` from
+> `src/api/api.c` (kept `app_setting_get/set`, still used by onboarding); removed the pthread agent
+> worker from `src/app/main.c`; deleted UI `Chat.jsx` + `Settings.jsx` (Assistant/Settings tabs) and
+> their `api.js` mocks. Makefile dropped `-lcurl`, the Keychain frameworks (`Security`/`CoreFoundation`)
+> from `app`/`mcp`, and `-DMB_SECRET_MEMORY`. **MCP server (`src/mcp`, `src/mcpd`) untouched** — it has
+> zero dependency on the agent. Docs updated (SPEC §8.4/§9, MCP.md, deleted AGENT.md). Rationale: the
+> in-app agent duplicated what an external MCP client does better, and made the offline engine a
+> network client. Net: −6 tests (2 agent, 2 redact, 1 secret, 1 settings-flow).
 >
 > **BUILD STATUS (2026-06-17): document lifecycle tightened + bug C1 fixed — 90 tests green, 0 leaks.**
 > Refines D13: an issued invoice/bill is now **immutable** — editable only while DRAFT, locked on
@@ -335,11 +346,15 @@ proper bookkeeping fundamentals.
      auto-launches the engine headless**, preserving the single-writer guarantee.
   _(Confirmed 2026-06-12. Implication: clean separation of engine vs UI shell; engine runnable
   headless.)_
-- **D9 — LLM provider layer:** Built-in sidebar agent uses a **pluggable provider abstraction**;
-  v1 supports **Anthropic, OpenAI, OpenRouter** (BYO API key). More providers addable later;
-  local-model support is a possible future provider. _(Confirmed 2026-06-12.)_
-- **D10 — Privacy posture (AI egress):** **Minimize + redact, cloud OK.** Storage stays 100% local;
-  egress happens ONLY on sidebar-agent LLM calls. Required machinery:
+- **D9 — LLM provider layer:** ⚠️ **SUPERSEDED 2026-06-19 — the in-app sidebar agent was removed.**
+  AI access is now solely through the MCP server (external client, e.g. Claude Desktop); the engine
+  makes no LLM calls of its own. _(Original: built-in sidebar agent with a pluggable provider
+  abstraction — Anthropic/OpenAI/OpenRouter, BYO key. Confirmed 2026-06-12.)_
+- **D10 — Privacy posture (AI egress):** ⚠️ **SUPERSEDED 2026-06-19 — with the in-app agent removed,
+  the engine has no cloud egress; the redaction/pseudonymization machinery below was deleted.** Data
+  now leaves the device only via the user's own external MCP client, under that client's control.
+  _(Original posture — minimize + redact, cloud OK — preserved below for history.)_ Storage stays
+  100% local; egress happens ONLY on sidebar-agent LLM calls. Required machinery:
   1. **Redaction/pseudonymization boundary** — swap sensitive identifiers (e.g. client/counterparty
      names, account numbers, memo/notes text) for stable tokens (`Client_7`) before sending; map
      back in the response. Model reasons over structure, not identities.
@@ -453,7 +468,10 @@ proper bookkeeping fundamentals.
   - Known gotcha: deleting a source needs `make clean` (no dep tracking yet).
   _(Built 2026-06-13. First real module: `src/money` — integer cents, D12.)_
 
-- **D22 — Secret storage (portable abstraction):** Provider API keys live behind an
+- **D22 — Secret storage (portable abstraction):** ⚠️ **SUPERSEDED 2026-06-19 — `src/secret` was
+  deleted with the in-app agent (it only held LLM API keys, so it became dead code). No secret store
+  ships in v1; reintroduce it behind this seam if a future feature needs OS credential storage.**
+  _(Original below for history.)_ Provider API keys live behind an
   **`mb_secret_store`** interface, **never in SQLite/logs/egress** (the `.sqlite` is the
   export/sync artifact, so keys there would leak). Backends: **macOS Keychain (built now)**;
   Windows Credential Manager/DPAPI + Linux libsecret (later); **encrypted-file fallback** for

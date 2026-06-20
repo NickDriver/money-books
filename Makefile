@@ -34,7 +34,7 @@ BUILD := build
 
 # Link the system SQLite for now (macOS ships 3.46 + FTS5). Before release we vendor
 # the amalgamation (add src/vendor/sqlite3.c, drop -lsqlite3) for portability/FTS5 control.
-LDLIBS := -lsqlite3 -lcurl
+LDLIBS := -lsqlite3
 
 # Engine = all library sources (no test runner, no app entry, no raw vendor — vendor is
 # compiled via a warning-silenced unity wrapper in src/json/).
@@ -49,8 +49,7 @@ TEST_SRC   := $(ENGINE_SRC) $(wildcard tests/*.c) $(wildcard src/test/*.c)
 test: $(BUILD)/test_runner
 	$(BUILD)/test_runner
 
-# Test/cov builds use the in-memory secret backend (no Keychain prompts).
-TESTDEFS := -DMB_TEST -DMB_SECRET_MEMORY
+TESTDEFS := -DMB_TEST
 
 $(BUILD)/test_runner: $(TEST_SRC) | $(BUILD)
 	$(CC) $(STD) $(INC) $(WARN) $(DEBUG) $(TESTDEFS) $(TEST_SRC) $(LDLIBS) -o $@
@@ -75,14 +74,14 @@ leaks: | $(BUILD)
 analyze:
 	@for f in $(ENGINE_SRC); do \
 	  echo "analyze $$f"; \
-	  $(CC) $(STD) $(INC) -DMB_TEST --analyze -DMB_SECRET_MEMORY -Xclang -analyzer-output=text $$f || exit 1; \
+	  $(CC) $(STD) $(INC) -DMB_TEST --analyze -Xclang -analyzer-output=text $$f || exit 1; \
 	done
 	@echo "static analysis clean"
 
 # ---- dead-code report (coverage: 0-hit functions are candidates) ----
 .PHONY: deadcode
 deadcode: | $(BUILD)
-	$(CC) $(STD) $(INC) -DMB_TEST -DMB_SECRET_MEMORY -fprofile-instr-generate -fcoverage-mapping \
+	$(CC) $(STD) $(INC) -DMB_TEST -fprofile-instr-generate -fcoverage-mapping \
 	  $(TEST_SRC) $(LDLIBS) -o $(BUILD)/cov_runner
 	LLVM_PROFILE_FILE=$(BUILD)/cov.profraw $(BUILD)/cov_runner >/dev/null || true
 	xcrun llvm-profdata merge -sparse $(BUILD)/cov.profraw -o $(BUILD)/cov.profdata
@@ -94,7 +93,7 @@ deadcode: | $(BUILD)
 # ---- stdio MCP server (pure C, for Claude Desktop & other MCP clients) ----
 .PHONY: mcp
 mcp: | $(BUILD)
-	$(CC) $(STD) $(INC) -O2 $(ENGINE_SRC) src/mcpd/main.c $(LDLIBS) -framework Security -framework CoreFoundation -o $(BUILD)/money-books-mcp
+	$(CC) $(STD) $(INC) -O2 $(ENGINE_SRC) src/mcpd/main.c $(LDLIBS) -o $(BUILD)/money-books-mcp
 	@echo "built $(BUILD)/money-books-mcp  —  Claude Desktop command: $(CURDIR)/$(BUILD)/money-books-mcp <book.sqlite>"
 
 # ---- native app (macOS GUI: WKWebView via webview/webview) ----
@@ -112,7 +111,7 @@ app: ui | $(BUILD)
 	@test -f $(WV)/core/src/webview.cc || { echo ">> run scripts/fetch_webview.sh first"; exit 1; }
 	clang++ -std=c++17 -DWEBVIEW_STATIC -I$(WV)/core/include -O2 -c $(WV)/core/src/webview.cc -o $(BUILD)/webview.o
 	clang -std=c11 -DWEBVIEW_STATIC $(INC) -I$(WV)/core/include -O2 $(APP_C) $(BUILD)/webview.o \
-	  $(LDLIBS) -lc++ -framework WebKit -framework Cocoa -framework Security -framework CoreFoundation -o $(BUILD)/MoneyBooks
+	  $(LDLIBS) -lc++ -framework WebKit -framework Cocoa -o $(BUILD)/MoneyBooks
 	@echo "built $(BUILD)/MoneyBooks  —  run: ./$(BUILD)/MoneyBooks book.sqlite"
 
 $(BUILD):

@@ -13,13 +13,13 @@
 
 A simple, **AI-native, local-first double-entry accounting app** for macOS (Apple Silicon),
 written in **pure C** with a **web-like native UI**. It pairs a rigorous double-entry engine with
-an integrated **MCP server** and a **sidebar AI agent**, so the books can be read and manipulated by
-an LLM through the same vetted operations a human uses — safely, auditably, and offline.
+an integrated **MCP server**, so the books can be read and manipulated by an external LLM client
+through the same vetted operations a human uses — safely, auditably, and offline.
 
 **Product principles**
 1. **Correct before clever** — the books are always balanced and audit-true; integrity beats features.
 2. **Few buttons** — a clean dashboard and a handful of primary flows, not a toolbar jungle.
-3. **AI-native, not AI-bolted-on** — the operation set *is* the tool surface; the agent uses it.
+3. **AI-native, not AI-bolted-on** — the operation set *is* the tool surface; MCP exposes it.
 4. **Local-first** — all data lives on device; the network is optional and only for AI + (future) sync.
 5. **Your data, your control** — explicit, per-tool AI permissions and a single auditable egress point.
 6. **Portable by design (D23)** — ship Mac/M-chip first, but keep the engine in portable C and all
@@ -40,8 +40,9 @@ an LLM through the same vetted operations a human uses — safely, auditably, an
 - Reusable **service/expense item dictionaries** (D14); optional **tax-as-liability line** (D15).
 - Reports: **Balance Sheet, P&L, Trial Balance, General Ledger, AR/AP aging, Cash Flow** (D16),
   with filtering, surfaced as a **flexible widget dashboard** (D17).
-- **MCP server** + **sidebar agent** (Anthropic/OpenAI/OpenRouter, BYO key) with **per-tool
-  Permit/Ask/Block** permissions (D18, D9) and **redacting egress** (D10, D11).
+- **MCP server** exposing the engine's intent operations to an external LLM client (e.g. Claude
+  Desktop), with **per-tool Permit/Ask/Block** permissions (D18). *(The in-app sidebar agent of D9
+  was built and then removed — see §8.4.)*
 - **Phase 0 testing/error/build** foundation (D21), already built.
 
 ### Out of scope (v1, designed not to preclude)
@@ -62,8 +63,8 @@ an LLM through the same vetted operations a human uses — safely, auditably, an
    UI  ◄────┤  WKWebView (HTML/CSS/JS)  ⇄  C↔JS bridge (JSON-RPC-ish)   │
             │                              │                             │
             │                    ┌─────────▼──────────┐                  │
-   Agent ───┤  Sidebar agent ──► │   Accounting       │ ◄─ Embedded MCP  │◄── external LLM
-            │  (LLM provider)    │   ENGINE (C lib)   │    server (HTTP/  │    (Claude Desktop
+            │                    │   Accounting       │ ◄─ Embedded MCP  │◄── external LLM
+            │                    │   ENGINE (C lib)   │    server (HTTP/  │    (Claude Desktop
             │                    │   = the ONLY       │    SSE, 127.0.0.1)│     via stdio shim)
             │                    │   writer           │                  │
             │                    └─────────┬──────────┘                  │
@@ -73,17 +74,16 @@ an LLM through the same vetted operations a human uses — safely, auditably, an
                             calls to the live app; auto-launches engine headless if closed
 ```
 
-**The engine is the only writer** (D8). Every mutation — from the UI, the sidebar agent, or an
-external MCP client — goes through the engine's invariant-enforcing operations. No component ever
-issues raw SQL writes. This is what makes the AI safe to empower.
+**The engine is the only writer** (D8). Every mutation — from the UI or an external MCP client —
+goes through the engine's invariant-enforcing operations. No component ever issues raw SQL writes.
+This is what makes the AI safe to empower.
 
 - **Engine (C library):** owns SQLite, enforces double-entry invariants, exposes the operation set.
   Must run **headless** (no window) so the stdio shim can auto-launch it.
 - **UI shell:** WKWebView via `webview/webview`; calls engine ops over the C↔JS bridge.
-- **Embedded MCP server:** in-process, localhost HTTP/SSE; canonical AI interface; calls engine ops.
+- **Embedded MCP server:** in-process, localhost HTTP/SSE; the AI interface; calls engine ops.
 - **stdio proxy shim:** tiny separate binary for standard MCP clients; forwards to the live app via
   local IPC; **auto-launches the engine headless** when the app is closed (D8). Never writes the DB.
-- **Sidebar agent:** an LLM client (provider abstraction) whose tools are the engine ops.
 
 ### 3.2 Tech stack (verified — RESEARCH.md)
 
@@ -93,8 +93,7 @@ issues raw SQL writes. This is what makes the AI safe to empower.
 | UI escape hatch | raw `objc_msgSend` (native menus/dialogs) | system |
 | Store | SQLite amalgamation, WAL, `BEGIN IMMEDIATE`, FTS5, JSON1, `user_version` | Public domain |
 | JSON | yyjson (or cJSON) | MIT |
-| HTTP client (LLM) | libcurl | curl/MIT-ish |
-| MCP HTTP/SSE server | civetweb (**not** mongoose/GPL) | MIT |
+| MCP HTTP/SSE server (future) | civetweb (**not** mongoose/GPL) | MIT |
 | MCP protocol | hand-built JSON-RPC 2.0, target rev **2025-11-25** | — |
 | P2P (future) | `iroh-c-ffi` + append-only-log/version-vector sync | Apache-2.0/MIT |
 
@@ -104,12 +103,14 @@ Pure C throughout; a Rust toolchain enters **only** at the future iroh phase.
 
 Ship Mac/M-chip first, **design portably**. The engine is portable C; platform-specific code sits
 behind thin abstractions:
-- **`mb_secret_store`** — Keychain (mac) now; Credential Manager/DPAPI (Win) + libsecret (Linux) later.
 - **UI chrome glue** — native menus/dialogs via `objc_msgSend` (mac); per-OS equivalents later.
 - **Paths** — data/config/cache dir resolution per OS.
 
-Nearly the whole stack already ports — `webview/webview` (WebKitGTK/WebView2), SQLite, libcurl,
-civetweb, yyjson, iroh, msquic. **Linux & Windows are explicit future targets, not v1.**
+*(A `mb_secret_store` Keychain abstraction existed for the in-app agent's API keys; it was removed
+with the agent. If a future feature needs OS secret storage, reintroduce it behind this seam.)*
+
+Nearly the whole stack already ports — `webview/webview` (WebKitGTK/WebView2), SQLite, civetweb,
+yyjson, iroh, msquic. **Linux & Windows are explicit future targets, not v1.**
 
 ---
 
@@ -167,7 +168,8 @@ column, `< 0` → credit column). Signed under the hood, Dr/Cr on screen — bot
 ### 4.2 Counterparties & items
 
 **`counterparty`** — clients/vendors. `{id, name, kind: CUSTOMER|VENDOR|BOTH, contact…, is_active}`.
-**Name is sensitive (D11)** → pseudonymized before cloud egress.
+**Name is sensitive (D11)** — flagged for redaction were any cloud egress to be reintroduced; the v1
+engine makes no cloud calls (§8.4), so the name stays local.
 
 **`item`** — reusable dictionary templates (D14).
 `{id, kind: SERVICE|EXPENSE, name, default_unit_price, default_account_id, unit_label, is_active}`.
@@ -213,11 +215,12 @@ it, you correct it with another document:
 
 ### 4.4 Local-only / non-synced tables
 
-- **`pseudonym_map`** `{entity_type, entity_id, token}` — e.g. `counterparty → "Client_7"` for egress (D10/D11).
 - **`tool_permission`** `{tool_name, policy: PERMIT|ASK|BLOCK}` — defaults: reads PERMIT, writes ASK (D18).
 - **`dashboard_widget`** `{id, view_name, params(JSON), size: HERO|NORMAL, position}` (D17).
-- **`provider_config`** `{provider, model, …}` — **API keys live in `mb_secret_store`, never SQLite** (D22).
+- **`app_setting`** `{k, v}` — generic local key/value (e.g. the onboarding flag).
 - **`book_meta`** `{currency, device_id, …}`; schema version via `PRAGMA user_version`.
+- *(Removed with the in-app agent: `pseudonym_map` for redaction egress and `provider_config` for LLM
+  keys/models — the engine no longer makes cloud calls, so neither is needed.)*
 
 ### 4.5 Migrations
 
@@ -270,7 +273,7 @@ All reports support **date-range and account/category filtering**.
 - Dashboard = ordered **widget instances**, each referencing a view + size (`HERO`/`NORMAL`) + params.
 - v1 customization: **add/remove + reorder + size**; full drag-grid is a fast-follow.
 - **Cash position** is the default hero widget. The Reports section always lists every view (nothing lost).
-- **AI-native:** the agent can define a custom view and **pin it** as a widget.
+- **AI-native:** an MCP client can define a custom view and **pin it** as a widget.
 
 ---
 
@@ -286,8 +289,7 @@ All reports support **date-range and account/category filtering**.
   editable) or **start empty** → set currency.
 - **Primary flows ("few buttons"):** record income, record expense, new invoice, mark invoice paid,
   new bill / pay bill, add account/category, add service/expense item, view reports.
-- **Sidebar agent:** chat panel; shows the model's proposed tool calls and **Ask** approvals inline.
-- Screens: Dashboard · Transactions · Invoices · Bills · Accounts & Categories · Items · Reports · Settings.
+- Screens: Dashboard · Transactions · Invoices · Bills · Accounts & Categories · Items · Reports.
 - **Detail views:** clicking an invoice/bill row opens a **detail view** (header + counterparty +
   line items + total + status + an Edit (DRAFT) / Void (issued, unpaid) affordance per the edit
   model above). Clicking a
@@ -305,7 +307,8 @@ All reports support **date-range and account/category filtering**.
 - **Transports:** stdio (shim binary) + in-process Streamable HTTP/SSE on `127.0.0.1` (validate
   `Origin`, bind localhost). Target protocol rev **2025-11-25**.
 - **Methods:** `initialize` (+ `notifications/initialized`), `ping`, `tools/list`, `tools/call`.
-- **Parity:** the in-app agent calls the same registry in-process as external clients.
+- **Single AI surface:** the MCP server is the *only* AI interface. The app makes no LLM calls of its
+  own; an external MCP client (e.g. Claude Desktop) connects to the engine's tool registry.
 
 ### 8.2 Tool surface (intent-based, never raw CRUD — D8)
 **Reads (default Permit):** `list_accounts`, `get_account`, `list_transactions`, `get_transaction`,
@@ -319,31 +322,30 @@ Each tool has a JSON-Schema input; writes go through the engine (invariants hold
 
 ### 8.3 Permissions (D18)
 Per-tool policy **Permit / Ask / Block** (Claude-Desktop-connector style). Enforced **server-side**
-in the engine/MCP layer (covers in-app agent *and* external clients). Factory defaults: reads =
-Permit, writes = **Ask**, nothing Block. Settings screen lists every tool with the 3-state control.
-On **Ask**, the proposed change is shown for approve/reject.
+in the engine/MCP layer (covers every external MCP client). Factory defaults: reads =
+Permit, writes = **Ask**, nothing Block.
 
-### 8.4 Sidebar agent (D9)
-Pluggable provider abstraction — **Anthropic, OpenAI, OpenRouter** (BYO key in Keychain). Only **two
-dialects** to implement: OpenAI-style (covers OpenAI + OpenRouter) and Anthropic-style (RESEARCH §3).
-Tool-use loop over libcurl (+ SSE streaming). Tools = the MCP tool surface, gated by §8.3 permissions.
+### 8.4 Sidebar agent (D9) — **removed**
+An in-app sidebar agent (pluggable Anthropic/OpenAI/OpenRouter LLM client over libcurl, with a
+redacting egress layer) was built in Phase 5 and then **descoped and deleted** — it made the app a
+network client and duplicated what an external MCP client already does better. AI access is now
+**solely** through the MCP server (§8.1): the user brings their own LLM client (e.g. Claude Desktop),
+which connects to the engine's tool registry. The engine itself makes **no outbound network calls**.
 
 ---
 
 ## 9. Privacy & security (D10, D11)
 
-- **Storage is 100% local;** the only egress is sidebar-agent LLM calls.
-- **Single auditable egress choke point** — all provider traffic passes one code path; optional
-  "preview what will be sent" + an egress log.
-- **Redaction/pseudonymization** before any cloud call: **client/counterparty names** and **account
-  names/numbers** → stable tokens (`Client_7`), mapped back in the response (`pseudonym_map`).
-  Memos and exact amounts pass through by default (D11); memo-redaction is an easy opt-in toggle.
-- **Minimization** — agent tools return aggregates/least-needed rows, not full ledgers.
-- **Provider notes** — Anthropic/OpenAI API don't train on data by default; **OpenRouter is a proxy**
-  → flag/limit for sensitive content.
-- **API keys in `mb_secret_store`** (macOS Keychain now; Windows/Linux backends + encrypted-file
-  fallback + env override later — D22), never in the DB or logs.
-- **Local HTTP** bound to loopback with `Origin` validation (DNS-rebinding defense).
+- **Storage is 100% local, and the engine makes no outbound network calls.** With the in-app agent
+  removed (§8.4), the app is fully offline; any data that leaves the device does so only through the
+  user's **own external MCP client** (e.g. Claude Desktop), under that client's control and policy.
+- **Minimization** — the intent-based tool surface returns aggregates/least-needed rows, not full
+  ledgers, limiting what an MCP client can pull in one call.
+- **Local transport** (future embedded HTTP/SSE) bound to loopback with `Origin` validation
+  (DNS-rebinding defense); stdio transport talks only to the client that launched the shim.
+- *(Historical: the deleted sidebar agent added a redacting egress choke point — pseudonymizing
+  counterparty/account names before cloud calls. With no in-engine egress, that layer is gone; the
+  responsibility for what reaches a provider now sits with the user's MCP client.)*
 
 ---
 
@@ -415,15 +417,14 @@ Tool-use loop over libcurl (+ SSE streaming). Tools = the MCP tool surface, gate
   `mb_item_list`; Items tab create/archive; **"+ Add from item"** autofills invoice/bill lines —
   description, qty, price, category — filtered by Service/Expense). ✅ verified live in preview each
   step; `make test` 76/76. **Phase 4 complete.**
-- **Phase 5 — AI (stdio MCP DONE, 2026-06-15):** MCP server `src/mcp` (JSON-RPC 2.0, protocol
-  2025-11-25) — 20 intent tools over `mb_api_dispatch`, per-tool Permit/Ask/Block (D18), stdio binary
-  `make mcp` for Claude Desktop ([MCP.md](MCP.md)). **In-app agent** also done: `src/redact`
-  (egress pseudonymization), `src/agent` (provider-agnostic tool-use loop, mock-tested), `src/llm`
-  (OpenAI/OpenRouter via libcurl), `agent.send` + sidebar Assistant UI ([AGENT.md](AGENT.md)).
-  Also DONE since: keys→**Keychain** + Settings UI (D22); agent call moved **off the UI thread**
-  (worker pthread) + chat typing indicator. *Remaining (Phase 5 polish): reply streaming,
-  Anthropic-native dialect, in-app **Ask-confirmation UI** + per-tool-policy settings screen,
-  embedded HTTP/SSE MCP transport.*
+- **Phase 5 — AI (MCP server DONE, 2026-06-15; in-app agent REMOVED, 2026-06-19):** MCP server
+  `src/mcp` (JSON-RPC 2.0, protocol 2025-11-25) — 20 intent tools over `mb_api_dispatch`, per-tool
+  Permit/Ask/Block (D18), stdio binary `make mcp` for Claude Desktop ([MCP.md](MCP.md)). **AI access
+  is now solely via this MCP server** (the user brings their own LLM client). The in-app sidebar agent
+  (`src/agent`/`src/llm`/`src/redact`/`src/secret`, `agent.send` + Assistant/Settings UI) was built
+  and then **deleted** — it duplicated an external MCP client while turning the offline engine into a
+  network client. *Remaining (optional Phase 5 polish): embedded HTTP/SSE MCP transport (today stdio
+  only).*
 - **Phase 6 — Packaging:** `.app`, signing/notarization, shim, CI.
 - **Phase 7+ — P2P:** iroh transport, version-vector sync, VPS assist.
 
@@ -446,11 +447,14 @@ Tool-use loop over libcurl (+ SSE streaming). Tools = the MCP tool surface, gate
 
 D1 WKWebView · D2 freelance/single-book · D3 single-currency (ready) · D4 accrual+AR/AP · D5
 invoices record-only (PDF/email-ready) · D6 double-entry + friendly/advanced · D7 first-run wizard ·
-D8 single-writer engine + MCP topology · D9 pluggable LLM providers · D10 redact-egress posture ·
-D11 sensitive fields (names + account numbers) · D12 integer cents · D13 immutable journal · D14
+D8 single-writer engine + MCP topology · ~~D9 pluggable LLM providers~~ *(in-app agent removed
+2026-06-19; AI is now external-MCP-client only — see §8.4)* · ~~D10 redact-egress posture~~ *(removed
+with the agent; engine makes no cloud calls)* · D11 sensitive fields (names + account numbers) · D12
+integer cents · D13 immutable journal · D14
 item/template dictionaries · D15 tax-as-liability-line · D16 report suite · D17 widget dashboard ·
 D18 per-tool Permit/Ask/Block · D19 validated tech stack · D20 sync-ready entry identity · D21
-Phase 0 testing/error/build · D22 portable secret store (Keychain now) · D23 portability principle
+Phase 0 testing/error/build · ~~D22 portable secret store (Keychain now)~~ *(removed with the agent)*
+· D23 portability principle
 (Mac first, Linux/Windows later) · D24 front-end React + Vite · D25 multi-company = one file per
 company + app-level registry + launcher (no in-DB multi-tenancy) · D26 customer/vendor credit =
 overpayment allowed; per-counterparty AR/AP **balance-forward** truth (AR/AP postings tagged with

@@ -16,8 +16,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <time.h>
+#include <stdint.h>
+#include <limits.h>
+#include <libgen.h>
+#include <mach-o/dyld.h>            /* _NSGetExecutablePath — locate the sibling MCP binary */
 
 #include <webview/api.h>              /* C API (vendored via scripts/fetch_webview.sh) */
 #include "vendor/cjson/cJSON.h"
@@ -82,6 +85,17 @@ static void derive_path(const char *name, char *buf, size_t n) {
   snprintf(buf, n, "%s/%s.sqlite", dir, safe);
 }
 
+/* Absolute path to the sibling `money-books-mcp` binary (same dir as this executable — true in the
+ * dev build dir and in a future .app bundle where both binaries ship together). */
+static void mcp_binary_path(char *buf, size_t n) {
+  char exe[PATH_MAX]; uint32_t sz = sizeof exe;
+  if (_NSGetExecutablePath(exe, &sz) != 0) { snprintf(buf, n, "money-books-mcp"); return; }
+  char real[PATH_MAX];
+  char tmp[PATH_MAX];
+  snprintf(tmp, sizeof tmp, "%s", realpath(exe, real) ? real : exe);
+  snprintf(buf, n, "%s/money-books-mcp", dirname(tmp));
+}
+
 /* Shell-level `app.*` methods (book registry + active-store swap). Always returns a malloc'd JSON. */
 static char *shell_dispatch(struct app_ctx *c, const char *method, const char *args_json) {
   cJSON *a = cJSON_Parse(args_json);
@@ -135,6 +149,25 @@ static char *shell_dispatch(struct app_ctx *c, const char *method, const char *a
       out = (e == MB_OK) ? ok_with_current(c) : json_err(e, NULL);
     }
 
+  } else if (!strcmp(method, "app.mcp_info")) {
+    /* Everything the "Connect to Claude" dialog needs: the absolute MCP command, the book's
+     * absolute path (one book = one company over MCP), and the Claude Desktop config location. */
+    const char *path = a ? sget(a, "path") : NULL;
+    if (!path || !path[0]) { out = json_err(MB_ERR_INVALID_ARG, "path required"); }
+    else {
+      char cmd[PATH_MAX]; mcp_binary_path(cmd, sizeof cmd);
+      char real[PATH_MAX]; const char *bookabs = realpath(path, real) ? real : path;
+      const char *home = getenv("HOME");
+      char cfg[PATH_MAX];
+      snprintf(cfg, sizeof cfg, "%s/Library/Application Support/Claude/claude_desktop_config.json",
+               home && home[0] ? home : "~");
+      cJSON *o = cJSON_CreateObject();
+      cJSON_AddStringToObject(o, "command", cmd);
+      cJSON_AddStringToObject(o, "book_path", bookabs);
+      cJSON_AddStringToObject(o, "config_path", cfg);
+      out = json_take(o);
+    }
+
   } else if (!strcmp(method, "app.book_forget")) {
     const char *path = a ? sget(a, "path") : NULL;
     if (!path || !path[0]) {
@@ -151,28 +184,6 @@ static char *shell_dispatch(struct app_ctx *c, const char *method, const char *a
 
   cJSON_Delete(a);
   return out ? out : json_err(MB_ERR_INTERNAL, "no result");
-}
-
-/* ---- async path for slow calls (agent.send) so the UI thread never blocks ---- */
-struct agent_job { webview_t w; mb_store *s; char *id; char *args; };
-struct agent_ret { char *id; char *result; };
-
-static void deliver_ret(webview_t w, void *p) {   /* runs on the main thread */
-  struct agent_ret *r = p;
-  webview_return(w, r->id, 0, r->result);
-  free(r->id); free(r->result); free(r);
-}
-static void *run_agent(void *p) {
-  struct agent_job *j = p;
-  char *res = NULL;
-  (void)mb_api_dispatch(j->s, "agent.send", j->args, &res);   /* the slow, network-bound call */
-  struct agent_ret *r = malloc(sizeof *r);
-  r->id = j->id;                                              /* ownership transferred */
-  r->result = res ? res : strdup("{\"error\":{\"code\":\"MB_ERR_INTERNAL\",\"message\":\"no result\"}}");
-  webview_dispatch(j->w, deliver_ret, r);                     /* hop back to the main thread */
-  free(j->args);
-  free(j);
-  return NULL;
 }
 
 /* JS calls window.mbInvoke(method, argsJson). webview passes req as a JSON array
@@ -207,20 +218,6 @@ static void on_invoke(const char *id, const char *req, void *arg) {
     free(r);
     cJSON_Delete(params);
     return;
-  }
-
-  /* agent.send can take many seconds (LLM round-trips) — run it off the UI thread so the
-   * window stays responsive and the chat's typing indicator can animate. */
-  if (!strcmp(method, "agent.send")) {
-    struct agent_job *j = malloc(sizeof *j);
-    j->w = w; j->s = c->s; j->id = strdup(id); j->args = strdup(args);
-    pthread_t t;
-    if (pthread_create(&t, NULL, run_agent, j) == 0) {
-      pthread_detach(t);
-      cJSON_Delete(params);
-      return;                                   /* webview_return happens later, from the worker */
-    }
-    free(j->id); free(j->args); free(j);        /* fall through to sync on thread-create failure */
   }
 
   char *result = NULL;

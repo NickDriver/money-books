@@ -44,12 +44,18 @@ static const mcp_tool TOOLS[] = {
    OBJ("{\"invoice_id\":{\"type\":\"string\"},\"issue_date\":{\"type\":\"string\"}}", "[\"invoice_id\",\"issue_date\"]")},
   {"get_invoice", "invoice.get", 0, "Get an invoice with its total and status.",
    OBJ("{\"id\":{\"type\":\"string\"}}", "[\"id\"]")},
+  {"list_invoices", "invoice.list", 0, "List all invoices (id, number, counterparty, issue/due date, status, total). Filter or count by status client-side (DRAFT/OPEN/PARTIAL/PAID/VOID).",
+   OBJ("{}", "[]")},
   {"create_bill", "bill.create", 1, "Create a draft bill from a vendor.",
    OBJ("{\"counterparty_id\":{\"type\":\"string\"},\"number\":{\"type\":\"string\"},\"due_date\":{\"type\":\"string\"},\"memo\":{\"type\":\"string\"}}", "[\"counterparty_id\"]")},
   {"add_bill_line", "bill.add_line", 1, "Add a line to a draft bill.",
    OBJ("{\"bill_id\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"},\"qty_centi\":{\"type\":\"integer\"},\"unit_price\":{\"type\":\"integer\"},\"account_id\":{\"type\":\"string\"},\"is_tax\":{\"type\":\"boolean\"}}", "[\"bill_id\",\"description\",\"unit_price\",\"account_id\"]")},
   {"enter_bill", "bill.enter", 1, "Enter a draft bill (posts Dr expense / Cr AP).",
    OBJ("{\"bill_id\":{\"type\":\"string\"},\"issue_date\":{\"type\":\"string\"}}", "[\"bill_id\",\"issue_date\"]")},
+  {"get_bill", "bill.get", 0, "Get a bill with its total and status.",
+   OBJ("{\"id\":{\"type\":\"string\"}}", "[\"id\"]")},
+  {"list_bills", "bill.list", 0, "List all bills (id, number, vendor, issue/due date, status, total). Filter or count by status client-side (DRAFT/OPEN/PARTIAL/PAID/VOID).",
+   OBJ("{}", "[]")},
   {"record_payment", "payment.record", 1, "Record a payment against an invoice or bill.",
    OBJ("{\"date\":{\"type\":\"string\"},\"amount\":{\"type\":\"integer\"},\"cash_account_id\":{\"type\":\"string\"},\"target\":{\"type\":\"string\",\"enum\":[\"INVOICE\",\"BILL\"]},\"target_id\":{\"type\":\"string\"}}", "[\"date\",\"amount\",\"cash_account_id\",\"target\",\"target_id\"]")},
   {"report_trial_balance", "report.trial_balance", 0, "Trial balance as of a date (debits must equal credits).",
@@ -117,8 +123,25 @@ static cJSON *do_tools_list(mb_store *s) {
     if (!strcmp(policy, "BLOCK")) continue;   /* hidden */
     cJSON *t = cJSON_CreateObject();
     cJSON_AddStringToObject(t, "name", TOOLS[i].name);
-    cJSON_AddStringToObject(t, "description", TOOLS[i].description);
-    cJSON_AddItemToObject(t, "inputSchema", cJSON_Parse(TOOLS[i].schema));
+    cJSON *schema = cJSON_Parse(TOOLS[i].schema);
+    if (TOOLS[i].is_write) {
+      /* surface the approval contract in the schema + description so clients/agents see it */
+      char desc[512];
+      snprintf(desc, sizeof desc, "%s  [WRITE — requires user approval: the first call returns an "
+               "approval request and writes nothing; re-call with confirm=true to execute.]",
+               TOOLS[i].description);
+      cJSON_AddStringToObject(t, "description", desc);
+      cJSON *props = cJSON_GetObjectItem(schema, "properties");
+      if (props) {
+        cJSON *cf = cJSON_AddObjectToObject(props, "confirm");
+        cJSON_AddStringToObject(cf, "type", "boolean");
+        cJSON_AddStringToObject(cf, "description",
+          "Set true to execute. Omit/false → server returns an approval request and writes nothing.");
+      }
+    } else {
+      cJSON_AddStringToObject(t, "description", TOOLS[i].description);
+    }
+    cJSON_AddItemToObject(t, "inputSchema", schema);
     cJSON_AddItemToArray(arr, t);
   }
   return r;
@@ -133,6 +156,34 @@ static cJSON *tool_error(const char *msg) {
   cJSON_AddStringToObject(t, "text", msg);
   cJSON_AddItemToArray(c, t);
   cJSON_AddBoolToObject(r, "isError", 1);
+  return r;
+}
+
+/* A write tool was called without confirm=true: return a human-facing approval request and do
+ * NOT execute. The client/agent must show this to the user and re-call with confirm=true. This is
+ * a server-side gate, stronger than the PERMIT/ASK policy (which delegates "ask" to the client). */
+static cJSON *approval_request(const mcp_tool *t, const cJSON *args) {
+  char *argstr = args ? cJSON_PrintUnformatted(args) : NULL;
+  size_t n = (argstr ? strlen(argstr) : 2) + 512;
+  char *msg = malloc(n);
+  if (msg)
+    snprintf(msg, n,
+      "APPROVAL REQUIRED — this writes to the books and must be confirmed by the user, regardless "
+      "of permission settings. Nothing has been written yet.\n\n"
+      "Tool: %s — %s\nArguments: %s\n\n"
+      "Show this to the user, get explicit approval, then call \"%s\" again with \"confirm\": true.",
+      t->name, t->description, argstr ? argstr : "{}", t->name);
+  cJSON *r = cJSON_CreateObject();
+  cJSON *c = cJSON_AddArrayToObject(r, "content");
+  cJSON *txt = cJSON_CreateObject();
+  cJSON_AddStringToObject(txt, "type", "text");
+  cJSON_AddStringToObject(txt, "text", msg ? msg : "APPROVAL REQUIRED — re-call with confirm=true.");
+  cJSON_AddItemToArray(c, txt);
+  cJSON *sc = cJSON_AddObjectToObject(r, "structuredContent");
+  cJSON_AddBoolToObject(sc, "approval_required", 1);
+  cJSON_AddStringToObject(sc, "tool", t->name);
+  free(msg);
+  free(argstr);
   return r;
 }
 
@@ -151,6 +202,15 @@ static cJSON *do_tools_call(mb_store *s, const cJSON *params) {
   if (!strcmp(policy, "BLOCK")) return tool_error("tool is blocked by permission policy");
 
   const cJSON *args = cJSON_GetObjectItemCaseSensitive(params, "arguments");
+
+  /* Mutation gate: every write requires explicit user approval, regardless of PERMIT/ASK policy.
+   * Without confirm=true the server returns an approval request and changes nothing; the user
+   * approves, then the tool is re-called with confirm=true. (BLOCK above still hard-refuses.) */
+  if (tool->is_write) {
+    const cJSON *confirm = args ? cJSON_GetObjectItemCaseSensitive(args, "confirm") : NULL;
+    if (!cJSON_IsTrue(confirm)) return approval_request(tool, args);
+  }
+
   char *args_str = args ? cJSON_PrintUnformatted(args) : NULL;
 
   char *result_json = NULL;
@@ -283,7 +343,7 @@ TEST(mcp, tools_call_records_income) {
   char msg[400];
   snprintf(msg, sizeof msg,
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"record_income\","
-    "\"arguments\":{\"date\":\"2026-09-01\",\"amount\":50000,\"deposit_account_id\":\"%s\",\"category_id\":\"%s\"}}}",
+    "\"arguments\":{\"date\":\"2026-09-01\",\"amount\":50000,\"deposit_account_id\":\"%s\",\"category_id\":\"%s\",\"confirm\":true}}}",
     bank, income);
   cJSON *j = call(s, msg);
   cJSON *res = cJSON_GetObjectItem(j, "result");
@@ -324,6 +384,44 @@ TEST(mcp, blocked_tool_hidden_and_refused) {
   j = call(s, "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"record_expense\",\"arguments\":{}}}");
   cJSON *res = cJSON_GetObjectItem(j, "result");
   ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(res, "isError")));
+  cJSON_Delete(j);
+  mb_store_close(s);
+}
+
+TEST(mcp, write_requires_confirmation) {
+  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
+  char bank[40], income[40];
+  mb_account_new b = {.name="Bank", .type=MB_ACCT_ASSET, .role=MB_ROLE_ACCOUNT};
+  mb_account_new i = {.name="Income", .type=MB_ACCT_INCOME, .role=MB_ROLE_CATEGORY};
+  ASSERT_OK(mb_account_create(s, &b, bank));
+  ASSERT_OK(mb_account_create(s, &i, income));
+
+  char base[300];
+  snprintf(base, sizeof base,
+    "\"date\":\"2026-09-01\",\"amount\":50000,\"deposit_account_id\":\"%s\",\"category_id\":\"%s\"", bank, income);
+
+  /* 1) no confirm → approval request, nothing posted */
+  char msg[500];
+  snprintf(msg, sizeof msg,
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"record_income\",\"arguments\":{%s}}}", base);
+  cJSON *j = call(s, msg);
+  cJSON *sc = cJSON_GetObjectItem(cJSON_GetObjectItem(j, "result"), "structuredContent");
+  ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(sc, "approval_required")));
+  cJSON_Delete(j);
+  j = call(s, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"report_pnl\",\"arguments\":{}}}");
+  sc = cJSON_GetObjectItem(cJSON_GetObjectItem(j, "result"), "structuredContent");
+  ASSERT_EQ_INT((long)cJSON_GetObjectItem(sc, "income")->valuedouble, 0);   /* unchanged */
+  cJSON_Delete(j);
+
+  /* 2) confirm:true → executes */
+  snprintf(msg, sizeof msg,
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"record_income\",\"arguments\":{%s,\"confirm\":true}}}", base);
+  j = call(s, msg);
+  ASSERT(cJSON_GetObjectItem(cJSON_GetObjectItem(j, "result"), "isError") == NULL);
+  cJSON_Delete(j);
+  j = call(s, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"report_pnl\",\"arguments\":{}}}");
+  sc = cJSON_GetObjectItem(cJSON_GetObjectItem(j, "result"), "structuredContent");
+  ASSERT_EQ_INT((long)cJSON_GetObjectItem(sc, "income")->valuedouble, 50000);   /* posted */
   cJSON_Delete(j);
   mb_store_close(s);
 }

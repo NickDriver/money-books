@@ -124,7 +124,7 @@ static const char *const MIGRATIONS[] = {
   "  tool TEXT PRIMARY KEY,"
   "  policy TEXT NOT NULL CHECK(policy IN ('PERMIT','ASK','BLOCK')));",
 
-  /* v4 — local app settings (non-secret; API keys live in mb_secret_store, never here) */
+  /* v4 — local app settings (generic key/value store, e.g. the onboarding flag) */
   "CREATE TABLE app_setting (k TEXT PRIMARY KEY, v TEXT NOT NULL);",
 
   /* v5 — customer/vendor credit (D26): per-counterparty AR/AP balance-forward + manual

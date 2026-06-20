@@ -10,6 +10,7 @@ export default function Items() {
   const [accounts, setAccounts] = useState([])
   const [err, setErr] = useState(null)
   const [creating, setCreating] = useState(false)
+  const [filter, setFilter] = useState('all') // 'all' | 'SERVICE' | 'EXPENSE'
 
   function reload() {
     invoke('item.list', {}).then((r) => setRows(r.items || [])).catch((e) => setErr(String(e)))
@@ -29,11 +30,19 @@ export default function Items() {
   if (!rows) return <p>Loading…</p>
 
   const acctName = (id) => accounts.find((a) => a.id === id)?.name || ''
+  const shown = rows.filter((it) => filter === 'all' || it.kind === filter)
 
   return (
     <>
       <h1>Items</h1>
       <p className="muted" style={{ marginTop: 0 }}>Reusable line templates for invoices &amp; bills — a name, default price, and category.</p>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 18, maxWidth: 360 }}>
+        {['all', 'SERVICE', 'EXPENSE'].map((f) => (
+          <button key={f} className={'toggle ' + (filter === f ? 'on' : '')} onClick={() => setFilter(f)}>
+            {f === 'all' ? 'All' : f === 'SERVICE' ? 'Service' : 'Expense'}
+          </button>
+        ))}
+      </div>
       {!creating && (
         <button className="primary" style={{ marginBottom: 16 }} onClick={() => setCreating(true)}>+ New item</button>
       )}
@@ -48,8 +57,8 @@ export default function Items() {
           <tr><th>Name</th><th>Kind</th><th>Category</th><th className="num">Default price</th><th></th></tr>
         </thead>
         <tbody>
-          {rows.length === 0 && <tr><td colSpan={5} className="muted">No items yet.</td></tr>}
-          {rows.map((it) => (
+          {shown.length === 0 && <tr><td colSpan={5} className="muted">{rows.length === 0 ? 'No items yet.' : 'No items in this filter.'}</td></tr>}
+          {shown.map((it) => (
             <tr key={it.id} style={it.is_active ? undefined : { opacity: 0.5 }}>
               <td>{it.name}{it.unit_label ? <span className="muted"> /{it.unit_label}</span> : null}{!it.is_active && <span className="tag" style={{ marginLeft: 8 }}>archived</span>}</td>
               <td><span className="tag">{it.kind === 'EXPENSE' ? 'Expense' : 'Service'}</span></td>

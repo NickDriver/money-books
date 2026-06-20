@@ -15,6 +15,7 @@ export default function Launcher({ hasCurrent, onCancel }) {
   const [tmpl, setTmpl] = useState('freelancer')
   const [openPath, setOpenPath] = useState('')
   const [confirmPath, setConfirmPath] = useState(null) // book pending "remove from list"
+  const [mcp, setMcp] = useState(null) // { book, info } | { book, error } | { book, loading:true }
 
   function reloadList() {
     invoke('app.book_list').then((r) => setBooks(r.books || [])).catch((e) => setErr(String(e)))
@@ -45,6 +46,12 @@ export default function Launcher({ hasCurrent, onCancel }) {
     try { await invoke('app.book_forget', { path }); reloadList() }
     catch (e) { setErr(String(e)) }
   }
+  async function openMcp(b, ev) {
+    ev.stopPropagation()
+    setMcp({ book: b, loading: true })
+    try { const info = await invoke('app.mcp_info', { path: b.path }); setMcp({ book: b, info }) }
+    catch (e) { setMcp({ book: b, error: String(e) }) }
+  }
 
   return (
     <div className="wizard">
@@ -72,8 +79,13 @@ export default function Launcher({ hasCurrent, onCancel }) {
                         <button className="linkbtn" onClick={(e) => { e.stopPropagation(); setConfirmPath(null) }}>Cancel</button>
                       </span>
                     ) : (
-                      <button className="linkbtn" title="Remove from this list (does not delete the file)"
-                        onClick={(e) => { e.stopPropagation(); setConfirmPath(b.path) }}>Remove</button>
+                      <>
+                        <button className="linkbtn" title="Show how to connect this company to Claude (MCP)"
+                          onClick={(e) => openMcp(b, e)}>MCP</button>
+                        <button className="linkbtn" title="Remove from this list (does not delete the file)"
+                          style={{ marginLeft: 10 }}
+                          onClick={(e) => { e.stopPropagation(); setConfirmPath(b.path) }}>Remove</button>
+                      </>
                     )}
                   </td>
                 </tr>
@@ -113,6 +125,69 @@ export default function Launcher({ hasCurrent, onCancel }) {
         </details>
 
         {err && <p className="neg">{err}</p>}
+      </div>
+      {mcp && <McpModal state={mcp} onClose={() => setMcp(null)} />}
+    </div>
+  )
+}
+
+const slug = (s) => 'books-' + String(s || 'company').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+
+// "Connect to Claude" dialog: a ready-to-paste Claude Desktop MCP entry for this one company/book.
+function McpModal({ state, onClose }) {
+  const { book, info, error, loading } = state
+  const [copied, setCopied] = useState(false)
+  const name = slug(book.name)
+  const entry = info
+    ? `"${name}": {\n  "command": "${info.command}",\n  "args": ["${info.book_path}"]\n}`
+    : ''
+
+  function copy() {
+    const done = () => { setCopied(true); setTimeout(() => setCopied(false), 1600) }
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(entry).then(done).catch(fallback)
+    } else { fallback() }
+    function fallback() {
+      const ta = document.createElement('textarea'); ta.value = entry
+      document.body.appendChild(ta); ta.select()
+      try { document.execCommand('copy'); done() } catch { /* user can select manually */ }
+      ta.remove()
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: 20 }}>
+      <div className="card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 660, width: '100%', maxHeight: '85vh', overflow: 'auto', padding: 22 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+          <h2 style={{ margin: 0 }}>Connect “{book.name}” to Claude</h2>
+          <button className="btn-outline" onClick={onClose}>Close</button>
+        </div>
+        <p className="muted" style={{ marginTop: 6 }}>
+          Each company is one MCP server entry. Add this to Claude Desktop and ask it about <strong>{book.name}</strong>’s books — it uses the same vetted operations the app does.
+        </p>
+
+        {loading && <p>Loading…</p>}
+        {error && <p className="neg">{error}</p>}
+        {info && (
+          <>
+            <ol style={{ paddingLeft: 18, lineHeight: 1.6 }}>
+              <li>Open your Claude Desktop config:<br />
+                <code style={{ wordBreak: 'break-all' }}>{info.config_path}</code></li>
+              <li>Paste this entry inside the <code>"mcpServers"</code> object (add a comma if it isn’t the last entry):</li>
+            </ol>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
+              <button className="btn-save filled" onClick={copy}>{copied ? 'Copied ✓' : 'Copy snippet'}</button>
+            </div>
+            <pre style={{ background: 'var(--code-bg, #0f1729)', color: 'var(--code-fg, #e6edf3)', padding: 14, borderRadius: 8, overflow: 'auto', fontSize: 12.5, margin: '0 0 10px' }}>{entry}</pre>
+            <ol start={3} style={{ paddingLeft: 18, lineHeight: 1.6 }}>
+              <li>Fully quit Claude Desktop (<strong>⌘Q</strong>, not just close the window) and reopen it.</li>
+              <li>“{name}” appears as a tool source. For multiple companies, repeat for each — one entry per book.</li>
+            </ol>
+            <p className="muted" style={{ fontSize: 12.5, marginBottom: 0 }}>
+              Tip: avoid writing to a company from both the app and Claude at the same moment — use one at a time per book. If you ran <code>make clean</code>, rebuild with <code>make mcp</code> first.
+            </p>
+          </>
+        )}
       </div>
     </div>
   )

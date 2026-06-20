@@ -120,20 +120,13 @@ function mock(method, args) {
     case 'app.book_create': return { ok: true, path: '/Users/you/Library/Application Support/MoneyBooks/New.sqlite' }
     case 'app.book_open': return { ok: true, path: args.path }
     case 'app.book_forget': return { ok: true }
-    case 'agent.send':
-      return { reply: '(preview mode — connect the native engine with an API key to chat for real)' }
-    case 'settings.list_providers':
+    case 'app.mcp_info':
       return {
-        active: 'openai',
-        providers: [
-          { provider: 'openai', active: true, has_key: false, model: 'gpt-4o-mini', base_url: 'https://api.openai.com/v1' },
-          { provider: 'openrouter', active: false, has_key: false, model: 'openai/gpt-4o-mini', base_url: 'https://openrouter.ai/api/v1' },
-        ],
+        command: '/Users/you/work/money_books/build/money-books-mcp',
+        book_path: (args.path && args.path.startsWith('/')) ? args.path
+          : '/Users/you/Library/Application Support/MoneyBooks/' + (args.path || 'book.sqlite'),
+        config_path: '/Users/you/Library/Application Support/Claude/claude_desktop_config.json',
       }
-    case 'settings.set_provider':
-      return { ok: true, has_key: true }
-    case 'settings.clear_key':
-      return { ok: true }
     default:
       return {}
   }

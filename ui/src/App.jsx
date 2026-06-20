@@ -7,8 +7,6 @@ import Invoices from './components/Invoices.jsx'
 import Accounts from './components/Accounts.jsx'
 import Items from './components/Items.jsx'
 import Reports from './components/Reports.jsx'
-import Chat from './components/Chat.jsx'
-import Settings from './components/Settings.jsx'
 import Wizard from './components/Wizard.jsx'
 import Launcher from './components/Launcher.jsx'
 
@@ -20,8 +18,6 @@ const TABS = [
   { key: 'accounts', label: 'Accounts & Categories', el: Accounts },
   { key: 'items', label: 'Items', el: Items },
   { key: 'reports', label: 'Reports', el: Reports },
-  { key: 'assistant', label: 'Assistant', el: Chat },
-  { key: 'settings', label: 'Settings', el: Settings },
 ]
 
 export default function App() {

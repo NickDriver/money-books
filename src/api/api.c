@@ -12,9 +12,6 @@
 #include "../invoice/invoice.h"
 #include "../bill/bill.h"
 #include "../payment/payment.h"
-#include "../agent/agent.h"
-#include "../llm/llm.h"
-#include "../secret/secret.h"
 #include "../seed/seed.h"
 #include "../book/book.h"
 
@@ -677,15 +674,7 @@ static mb_err h_book_onboard(mb_store *s, const cJSON *a, cJSON **res) {
   return MB_OK;
 }
 
-/* ---- LLM provider settings (key in mb_secret_store, config in app_setting) ---- */
-static const char *PROVIDERS[] = {"openai", "openrouter"};
-#define PROVIDER_COUNT 2
-
-static void provider_defaults(const char *p, const char **base, const char **model) {
-  if (!strcmp(p, "openrouter")) { *base = "https://openrouter.ai/api/v1"; *model = "openai/gpt-4o-mini"; }
-  else                          { *base = "https://api.openai.com/v1";    *model = "gpt-4o-mini"; }
-}
-
+/* ---- app settings (generic key/value store in app_setting; e.g. the onboarding flag) ---- */
 static mb_err app_setting_get(mb_store *s, const char *k, char *buf, size_t n) {
   sqlite3_stmt *st;
   if (sqlite3_prepare_v2(mb_store_handle(s), "SELECT v FROM app_setting WHERE k=?;", -1, &st, NULL) != SQLITE_OK)
@@ -711,101 +700,6 @@ static mb_err app_setting_set(mb_store *s, const char *k, const char *v) {
   mb_err e = (sqlite3_step(st) == SQLITE_DONE) ? MB_OK : MB_FAIL(MB_ERR_DB, "%s", sqlite3_errmsg(mb_store_handle(s)));
   sqlite3_finalize(st);
   return e;
-}
-
-static void active_provider(mb_store *s, char buf[24]) {
-  if (app_setting_get(s, "llm.active", buf, 24) != MB_OK) snprintf(buf, 24, "%s", "openai");
-}
-
-static int valid_provider(const char *p) {
-  for (int i = 0; i < PROVIDER_COUNT; i++) if (p && !strcmp(p, PROVIDERS[i])) return 1;
-  return 0;
-}
-
-static mb_err h_settings_list_providers(mb_store *s, const cJSON *a, cJSON **res) {
-  (void)a;
-  char active[24]; active_provider(s, active);
-  *res = cJSON_CreateObject();
-  cJSON_AddStringToObject(*res, "active", active);
-  cJSON *arr = cJSON_AddArrayToObject(*res, "providers");
-  for (int i = 0; i < PROVIDER_COUNT; i++) {
-    const char *p = PROVIDERS[i];
-    const char *dbase, *dmodel; provider_defaults(p, &dbase, &dmodel);
-    char acct[40], key[64], model[128], base[256];
-    snprintf(acct, sizeof acct, "llm:%s", p);
-    if (app_setting_get(s, (snprintf(key, sizeof key, "llm.%s.model", p), key), model, sizeof model) != MB_OK)
-      snprintf(model, sizeof model, "%s", dmodel);
-    if (app_setting_get(s, (snprintf(key, sizeof key, "llm.%s.base_url", p), key), base, sizeof base) != MB_OK)
-      snprintf(base, sizeof base, "%s", dbase);
-    cJSON *o = cJSON_CreateObject();
-    cJSON_AddStringToObject(o, "provider", p);
-    cJSON_AddBoolToObject(o, "active", !strcmp(active, p));
-    cJSON_AddBoolToObject(o, "has_key", mb_secret_has(acct));   /* never returns the key itself */
-    cJSON_AddStringToObject(o, "model", model);
-    cJSON_AddStringToObject(o, "base_url", base);
-    cJSON_AddItemToArray(arr, o);
-  }
-  return MB_OK;
-}
-
-static mb_err h_settings_set_provider(mb_store *s, const cJSON *a, cJSON **res) {
-  const char *p = jstr(a, "provider");
-  if (!valid_provider(p)) return MB_FAIL(MB_ERR_INVALID_ARG, "provider must be openai or openrouter");
-  char acct[40], key[64];
-  snprintf(acct, sizeof acct, "llm:%s", p);
-  const char *api_key = jstr(a, "api_key");
-  if (api_key && api_key[0]) MB_TRY(mb_secret_set(acct, api_key));      /* -> Keychain */
-  const char *model = jstr(a, "model");
-  if (model) MB_TRY(app_setting_set(s, (snprintf(key, sizeof key, "llm.%s.model", p), key), model));
-  const char *base = jstr(a, "base_url");
-  if (base) MB_TRY(app_setting_set(s, (snprintf(key, sizeof key, "llm.%s.base_url", p), key), base));
-  if (jbool(a, "active")) MB_TRY(app_setting_set(s, "llm.active", p));
-  *res = cJSON_CreateObject();
-  cJSON_AddBoolToObject(*res, "ok", 1);
-  cJSON_AddBoolToObject(*res, "has_key", mb_secret_has(acct));
-  return MB_OK;
-}
-
-static mb_err h_settings_clear_key(mb_store *s, const cJSON *a, cJSON **res) {
-  (void)s;
-  const char *p = jstr(a, "provider");
-  if (!valid_provider(p)) return MB_FAIL(MB_ERR_INVALID_ARG, "unknown provider");
-  char acct[40]; snprintf(acct, sizeof acct, "llm:%s", p);
-  mb_secret_delete(acct);
-  *res = cJSON_CreateObject();
-  cJSON_AddBoolToObject(*res, "ok", 1);
-  return MB_OK;
-}
-
-/* run the sidebar agent for one message (active provider; key from mb_secret_store, env override) */
-static mb_err h_agent_send(mb_store *s, const cJSON *a, cJSON **res) {
-  const char *msg = jstr(a, "message");
-  if (!msg || !msg[0]) return MB_FAIL(MB_ERR_INVALID_ARG, "message required");
-
-  char provider[24]; active_provider(s, provider);
-  const char *dbase, *dmodel; provider_defaults(provider, &dbase, &dmodel);
-  char key[2048], model[128], base[256], k[64];
-  if (mb_secret_get((snprintf(k, sizeof k, "llm:%s", provider), k), key, sizeof key) != MB_OK) {
-    const char *env = getenv("MB_LLM_API_KEY");                /* env override / fallback */
-    if (env && env[0]) snprintf(key, sizeof key, "%s", env);
-    else return MB_FAIL(MB_ERR_PERMISSION,
-                        "no API key for '%s' — add one in Settings", provider);
-  }
-  if (app_setting_get(s, (snprintf(k, sizeof k, "llm.%s.model", provider), k), model, sizeof model) != MB_OK)
-    snprintf(model, sizeof model, "%s", dmodel);
-  if (app_setting_get(s, (snprintf(k, sizeof k, "llm.%s.base_url", provider), k), base, sizeof base) != MB_OK)
-    snprintf(base, sizeof base, "%s", dbase);
-
-  mb_llm_provider prov;
-  MB_TRY(mb_llm_openai_provider(base, key, model, &prov));
-  char *reply = NULL;
-  mb_err e = mb_agent_run(s, &prov, msg, &reply);
-  mb_llm_provider_free(&prov);
-  if (e != MB_OK) { free(reply); return e; }
-  *res = cJSON_CreateObject();
-  cJSON_AddStringToObject(*res, "reply", reply);
-  free(reply);
-  return MB_OK;
 }
 
 mb_err mb_api_dispatch(mb_store *s, const char *method, const char *args_json, char **result_json) {
@@ -860,10 +754,6 @@ mb_err mb_api_dispatch(mb_store *s, const char *method, const char *args_json, c
   else if (!strcmp(method, "book.status"))         e = h_book_status(s, args, &res);
   else if (!strcmp(method, "book.onboard"))        e = h_book_onboard(s, args, &res);
   else if (!strcmp(method, "book.set_name"))       e = h_book_set_name(s, args, &res);
-  else if (!strcmp(method, "agent.send"))          e = h_agent_send(s, args, &res);
-  else if (!strcmp(method, "settings.list_providers")) e = h_settings_list_providers(s, args, &res);
-  else if (!strcmp(method, "settings.set_provider"))   e = h_settings_set_provider(s, args, &res);
-  else if (!strcmp(method, "settings.clear_key"))      e = h_settings_clear_key(s, args, &res);
   else                                             e = MB_FAIL(MB_ERR_UNSUPPORTED, "unknown method '%s'", method);
 
   cJSON_Delete(args);
@@ -1133,36 +1023,4 @@ TEST(api, credit_overpay_and_apply_flow) {
   mb_store_close(s);
 }
 
-TEST(api, settings_provider_key_flow) {
-  mb_store *s = NULL; ASSERT_OK(mb_store_open_memory(&s));
-  char *r = NULL;
-  mb_secret_delete("llm:openai");   /* clean slate (in-memory backend in tests) */
-
-  /* set a key + model + make active */
-  ASSERT_OK(mb_api_dispatch(s, "settings.set_provider",
-    "{\"provider\":\"openai\",\"api_key\":\"sk-test-123\",\"model\":\"gpt-4o\",\"active\":true}", &r));
-  cJSON *j = cJSON_Parse(r);
-  ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(j, "has_key")));
-  cJSON_Delete(j); free(r);
-
-  /* list shows has_key + active + model, but NEVER the key */
-  ASSERT_OK(mb_api_dispatch(s, "settings.list_providers", "{}", &r));
-  ASSERT(strstr(r, "sk-test-123") == NULL);   /* key never leaves the secret store */
-  j = cJSON_Parse(r);
-  ASSERT_STR_EQ(cJSON_GetObjectItem(j, "active")->valuestring, "openai");
-  cJSON *provs = cJSON_GetObjectItem(j, "providers");
-  cJSON *oai = cJSON_GetArrayItem(provs, 0);
-  ASSERT_STR_EQ(cJSON_GetObjectItem(oai, "provider")->valuestring, "openai");
-  ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(oai, "has_key")));
-  ASSERT_STR_EQ(cJSON_GetObjectItem(oai, "model")->valuestring, "gpt-4o");
-  cJSON_Delete(j); free(r);
-
-  /* clear the key */
-  ASSERT_OK(mb_api_dispatch(s, "settings.clear_key", "{\"provider\":\"openai\"}", &r)); free(r);
-  ASSERT_OK(mb_api_dispatch(s, "settings.list_providers", "{}", &r));
-  j = cJSON_Parse(r);
-  ASSERT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(j, "providers"), 0), "has_key")));
-  cJSON_Delete(j); free(r);
-  mb_store_close(s);
-}
 #endif
