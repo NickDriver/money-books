@@ -312,6 +312,7 @@ static mb_err h_transaction_post(mb_store *s, const cJSON *a, cJSON **res) {
     p[i].account_id = jstr(it, "account_id");      /* valid until args is deleted */
     p[i].amount = (mb_money)jint(it, "amount", 0);
     p[i].memo = jstr(it, "memo");
+    p[i].counterparty_id = jstr(it, "counterparty_id");  /* nullable; must be set — struct isn't zeroed */
     if (!p[i].account_id) { free(p); return MB_FAIL(MB_ERR_INVALID_ARG, "posting %d missing account_id", i); }
   }
   char eid[40];
