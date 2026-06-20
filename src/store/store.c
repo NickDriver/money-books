@@ -153,6 +153,20 @@ static const char *const MIGRATIONS[] = {
   "CREATE INDEX idx_alloc_target ON allocation(target_kind, target_id);"
   "CREATE INDEX idx_alloc_cp ON allocation(counterparty_id, target_kind);"
   "CREATE INDEX idx_posting_cp ON posting(counterparty_id);",
+
+  /* v6 — Phase 7a-0: per-device sync log. The journal was a single linear hash
+   * chain keyed off a book-global next_seq / last_hash, which forks the moment two
+   * devices append. Re-key both to per-device so each device owns an independent
+   * append-only chain (see docs/PHASE7_SYNC.md §3). Pure rename of book_meta keys;
+   * the journal rows already carry (device_id, seq) so no data moves. Empty/fresh
+   * books have no device_id row yet (init_meta runs after migrate) → these SELECTs
+   * match nothing and the migration is a harmless no-op there. book_id is backfilled
+   * by init_meta for every book. */
+  "INSERT INTO book_meta(k,v) SELECT 'next_seq:'||d.v, ns.v"
+  "  FROM book_meta d JOIN book_meta ns ON ns.k='next_seq' WHERE d.k='device_id';"
+  "INSERT INTO book_meta(k,v) SELECT 'last_hash:'||d.v, lh.v"
+  "  FROM book_meta d JOIN book_meta lh ON lh.k='last_hash' WHERE d.k='device_id';"
+  "DELETE FROM book_meta WHERE k IN ('next_seq','last_hash');",
 };
 static const int MIGRATION_COUNT = (int)(sizeof MIGRATIONS / sizeof MIGRATIONS[0]);
 
@@ -230,18 +244,31 @@ mb_err mb_store_meta_set_int(mb_store *s, const char *key, int64_t val) {
 }
 
 mb_err mb_store_next_stamp(mb_store *s, int64_t *seq, int64_t *lamport) {
-  int64_t ns, lam;
-  MB_TRY(mb_store_meta_get_int(s, "next_seq", &ns));
+  /* seq is per-device monotonic (Phase 7 sync): each device owns an independent
+   * append-only log keyed (device_id, seq). lamport stays a single book-wide
+   * logical clock so entries from all devices have a deterministic total order. */
+  char dev[40], key[56];
+  MB_TRY(mb_store_device_id(s, dev));
+  snprintf(key, sizeof key, "next_seq:%s", dev);
+
+  int64_t ns = 1, lam;
+  mb_err e = mb_store_meta_get_int(s, key, &ns);
+  if (e == MB_ERR_NOT_FOUND) ns = 1;          /* first entry from this device */
+  else if (e != MB_OK) return e;
   MB_TRY(mb_store_meta_get_int(s, "lamport", &lam));
+
   *seq = ns;
   *lamport = lam + 1;
-  MB_TRY(mb_store_meta_set_int(s, "next_seq", ns + 1));
+  MB_TRY(mb_store_meta_set_int(s, key, ns + 1));
   MB_TRY(mb_store_meta_set_int(s, "lamport", *lamport));
   return MB_OK;
 }
 
 mb_err mb_store_device_id(mb_store *s, char buf[40]) {
   return mb_store_meta_get(s, "device_id", buf, 40);
+}
+mb_err mb_store_book_id(mb_store *s, char buf[40]) {
+  return mb_store_meta_get(s, "book_id", buf, 40);
 }
 mb_err mb_store_currency(mb_store *s, char buf[8]) {
   return mb_store_meta_get(s, "currency", buf, 8);
@@ -275,12 +302,20 @@ static mb_err init_meta(mb_store *s) {
     char uuid[40];
     MB_TRY(mb_uuid(uuid, sizeof uuid));
     MB_TRY(mb_store_begin(s));
+    /* No global next_seq: per-device seq is keyed next_seq:<device_id> and defaults
+     * to 1 on first use (mb_store_next_stamp). */
     mb_err e = mb_store_meta_set(s, "device_id", uuid);
-    if (e == MB_OK) e = mb_store_meta_set_int(s, "next_seq", 1);
     if (e == MB_OK) e = mb_store_meta_set_int(s, "lamport", 0);
     if (e == MB_OK) e = mb_store_meta_set(s, "currency", "USD");
     if (e != MB_OK) { mb_store_rollback(s); return e; }
     MB_TRY(mb_store_commit(s));
+  }
+  /* book_id: stable per-book identity for sync (Phase 7a-0). Ensured for every book,
+   * so it also backfills books created before v6. */
+  if (mb_store_meta_get(s, "book_id", buf, sizeof buf) == MB_ERR_NOT_FOUND) {
+    char uuid[40];
+    MB_TRY(mb_uuid(uuid, sizeof uuid));
+    MB_TRY(mb_store_meta_set(s, "book_id", uuid));
   }
   return MB_OK;
 }
@@ -337,6 +372,36 @@ TEST(store, stamps_increment) {
   ASSERT_OK(mb_store_commit(s));
   ASSERT_EQ_INT(s2, s1 + 1);   /* seq is strictly monotonic (D20 sync identity) */
   ASSERT_EQ_INT(l2, l1 + 1);   /* lamport likewise */
+  mb_store_close(s);
+}
+
+TEST(store, seq_is_per_device) {
+  mb_store *s = NULL;
+  ASSERT_OK(mb_store_open_memory(&s));
+  int64_t seq, lam;
+  ASSERT_OK(mb_store_begin(s));
+  ASSERT_OK(mb_store_next_stamp(s, &seq, &lam)); ASSERT_EQ_INT(seq, 1);
+  ASSERT_OK(mb_store_next_stamp(s, &seq, &lam)); ASSERT_EQ_INT(seq, 2);
+  /* a different device stamping into the same book starts its own seq at 1 */
+  ASSERT_OK(mb_store_meta_set(s, "device_id", "DEVICE-B"));
+  ASSERT_OK(mb_store_next_stamp(s, &seq, &lam)); ASSERT_EQ_INT(seq, 1);
+  ASSERT_OK(mb_store_next_stamp(s, &seq, &lam)); ASSERT_EQ_INT(seq, 2);
+  /* lamport is book-wide: keeps climbing across the device switch */
+  int64_t lam_b = lam;
+  ASSERT_OK(mb_store_meta_set(s, "device_id", "DEVICE-A-again"));
+  ASSERT_OK(mb_store_next_stamp(s, &seq, &lam));
+  ASSERT_EQ_INT(seq, 1);
+  ASSERT_EQ_INT(lam, lam_b + 1);
+  ASSERT_OK(mb_store_commit(s));
+  mb_store_close(s);
+}
+
+TEST(store, has_book_id) {
+  mb_store *s = NULL;
+  ASSERT_OK(mb_store_open_memory(&s));
+  char b[40];
+  ASSERT_OK(mb_store_book_id(s, b));
+  ASSERT_EQ_INT((long)strlen(b), 36);
   mb_store_close(s);
 }
 

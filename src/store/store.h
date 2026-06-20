@@ -38,6 +38,8 @@ mb_err mb_store_next_stamp(mb_store *s, int64_t *seq, int64_t *lamport) MB_MUST_
 
 mb_err mb_store_device_id(mb_store *s, char buf[40]) MB_MUST_CHECK;
 mb_err mb_store_currency(mb_store *s, char buf[8]) MB_MUST_CHECK;
+/* stable per-book identity (Phase 7 sync): never cross-sync two different books. */
+mb_err mb_store_book_id(mb_store *s, char buf[40]) MB_MUST_CHECK;
 
 /* current UTC time as ISO-8601 ("2026-06-14T10:00:00Z"); buflen >= 21. */
 void mb_now_iso(char *buf, size_t buflen);
