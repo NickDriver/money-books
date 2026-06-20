@@ -1,4 +1,9 @@
 build/
+# CMake build trees (out-of-source) + in-source config artifacts
+build-cmake/
+build-rel/
+CMakeCache.txt
+CMakeFiles/
 *.o
 *.a
 *.gcda
