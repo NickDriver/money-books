@@ -129,13 +129,14 @@ if(EXISTS ${WV}/core/src/webview.cc AND EXISTS ${IROH_DIR})
   add_custom_target(share_lib DEPENDS ${IROH_LIB})
 
   # Platform-specific shell sources + native libraries.
-  set(MB_APP_PLATFORM "")
+  # The desktop-shell platform shim — one implementation per OS (see src/app/platform.h).
   if(APPLE)
     enable_language(OBJC)
-    set(MB_APP_PLATFORM src/app/savepanel.m)
+    set(MB_APP_PLATFORM src/app/platform_mac.m)
   elseif(WIN32)
-    # platform_win.c (file dialogs, %APPDATA%, GetModuleFileName) lands in the platform step.
-    # set(MB_APP_PLATFORM src/app/platform_win.c)
+    set(MB_APP_PLATFORM src/app/platform_win.c)   # authored in the Windows platform step
+  else()
+    set(MB_APP_PLATFORM src/app/platform_posix.c) # authored in the Linux platform step
   endif()
 
   add_executable(MoneyBooks WIN32 ${MB_ENGINE_SRC} src/app/main.c ${MB_APP_PLATFORM})

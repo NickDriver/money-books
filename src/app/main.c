@@ -19,8 +19,6 @@
 #include <time.h>
 #include <stdint.h>
 #include <limits.h>
-#include <libgen.h>
-#include <mach-o/dyld.h>            /* _NSGetExecutablePath — locate the sibling MCP binary */
 
 #include <webview/api.h>              /* C API (vendored via scripts/fetch_webview.sh) */
 #include "vendor/cjson/cJSON.h"
@@ -28,7 +26,7 @@
 #include "api/api.h"
 #include "book/book.h"
 #include "registry/registry.h"
-#include "app/savepanel.h"
+#include "app/platform.h"            /* native host glue (exe path, dialogs) — one impl per OS */
 
 #ifdef MB_WITH_SHARE
 #include <pthread.h>
@@ -115,17 +113,6 @@ static void derive_path(const char *name, char *buf, size_t n) {
   safe[j] = '\0';
   if (j == 0) snprintf(safe, sizeof safe, "book");
   snprintf(buf, n, "%s/%s.sqlite", dir, safe);
-}
-
-/* Absolute path to the sibling `money-books-mcp` binary (same dir as this executable — true in the
- * dev build dir and in a future .app bundle where both binaries ship together). */
-static void mcp_binary_path(char *buf, size_t n) {
-  char exe[PATH_MAX]; uint32_t sz = sizeof exe;
-  if (_NSGetExecutablePath(exe, &sz) != 0) { snprintf(buf, n, "money-books-mcp"); return; }
-  char real[PATH_MAX];
-  char tmp[PATH_MAX];
-  snprintf(tmp, sizeof tmp, "%s", realpath(exe, real) ? real : exe);
-  snprintf(buf, n, "%s/money-books-mcp", dirname(tmp));
 }
 
 /* ---- live read-only sharing (Phase 7b-3) ---- */
@@ -303,12 +290,9 @@ static char *shell_dispatch(struct app_ctx *c, const char *method, const char *a
     const char *path = a ? sget(a, "path") : NULL;
     if (!path || !path[0]) { out = json_err(MB_ERR_INVALID_ARG, "path required"); }
     else {
-      char cmd[PATH_MAX]; mcp_binary_path(cmd, sizeof cmd);
+      char cmd[PATH_MAX]; mb_platform_mcp_binary_path(cmd, sizeof cmd);
       char real[PATH_MAX]; const char *bookabs = realpath(path, real) ? real : path;
-      const char *home = getenv("HOME");
-      char cfg[PATH_MAX];
-      snprintf(cfg, sizeof cfg, "%s/Library/Application Support/Claude/claude_desktop_config.json",
-               home && home[0] ? home : "~");
+      char cfg[PATH_MAX]; mb_platform_claude_config_path(cfg, sizeof cfg);
       cJSON *o = cJSON_CreateObject();
       cJSON_AddStringToObject(o, "command", cmd);
       cJSON_AddStringToObject(o, "book_path", bookabs);
@@ -444,7 +428,7 @@ static void on_save_file(const char *id, const char *req, void *arg) {
   }
 
   char buf[1024] = "";
-  int rc = mb_save_panel(filename, content, buf, sizeof buf);
+  int rc = mb_platform_save_file(filename, content, buf, sizeof buf);
 
   cJSON *o = cJSON_CreateObject();
   if (rc == 1) {

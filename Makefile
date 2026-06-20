@@ -107,8 +107,9 @@ mcp: $(SQLITE_OBJ) | $(BUILD)
 # Run scripts/fetch_webview.sh once to vendor webview. Builds the React UI, compiles the
 # webview C++ impl, then links our C engine + the shell. Displays on a logged-in session.
 WV := src/vendor/webview
-# main.c is C; savepanel.m is Objective-C (NSSavePanel). clang compiles each by extension.
-APP_C := $(ENGINE_SRC) src/app/main.c src/app/savepanel.m
+# main.c is C; platform_mac.m is Objective-C (the macOS platform shim). clang picks the
+# compiler per extension. On Windows/Linux this becomes platform_win.c / platform_posix.c.
+APP_C := $(ENGINE_SRC) src/app/main.c src/app/platform_mac.m
 
 .PHONY: ui
 ui:
