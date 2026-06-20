@@ -26,7 +26,21 @@ const TABS = [
 // tabs are hidden, and the remaining tabs hide their write controls (ReadOnlyContext).
 const GUEST_TABS = new Set(['dashboard', 'transactions', 'invoices', 'reports'])
 
+const THEMES = [
+  { key: 'light', label: 'Light' },
+  { key: 'dark', label: 'Dark' },
+  { key: 'system', label: 'System' },
+]
+
 export default function App() {
+  // Theme is purely a UI preference — persisted in localStorage and applied to <html data-theme>.
+  // The CSS in styles.css resolves "system" against the OS via prefers-color-scheme.
+  const [theme, setTheme] = useState(() => localStorage.getItem('mb-theme') || 'dark')
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    localStorage.setItem('mb-theme', theme)
+  }, [theme])
+
   const [current, setCurrent] = useState(undefined) // undefined=checking, null=none, {path,name,read_only}=open
   const [showLauncher, setShowLauncher] = useState(false)
   const [showShare, setShowShare] = useState(false)
@@ -92,12 +106,20 @@ export default function App() {
               </button>
             ))}
           </nav>
-          {isGuest
-            ? <button className="nav-switch" onClick={disconnect}>⤬ Disconnect</button>
-            : <>
-                <button className="nav-switch" onClick={() => setShowShare(true)}>⇆ Share book</button>
-                <button className="nav-switch" onClick={() => setShowLauncher(true)}>⇄ Switch company</button>
-              </>}
+          <div className="nav-bottom">
+            {isGuest
+              ? <button className="nav-switch" onClick={disconnect}>⤬ Disconnect</button>
+              : <>
+                  <button className="nav-switch" onClick={() => setShowShare(true)}>⇆ Share book</button>
+                  <button className="nav-switch" onClick={() => setShowLauncher(true)}>⇄ Switch company</button>
+                  <div className="theme-switch" role="group" aria-label="Theme">
+                    {THEMES.map((t) => (
+                      <button key={t.key} className={t.key === theme ? 'on' : ''}
+                        onClick={() => setTheme(t.key)}>{t.label}</button>
+                    ))}
+                  </div>
+                </>}
+          </div>
         </aside>
         <main className="main">
           {!usingBridge && <div className="banner">Preview mode — showing mock data (native engine not attached)</div>}
