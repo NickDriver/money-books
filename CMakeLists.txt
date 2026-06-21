@@ -83,6 +83,13 @@ mb_target_common(test_runner)
 target_compile_definitions(test_runner PRIVATE MB_TEST)
 target_compile_options(test_runner PRIVATE ${MB_WARNINGS} ${MB_SAN_FLAGS})
 target_link_options(test_runner PRIVATE ${MB_SAN_FLAGS})
+if(WIN32)
+  target_link_libraries(test_runner PRIVATE bcrypt)   # mb_id.c → BCryptGenRandom
+endif()
+if(MSVC)
+  # The share protocol test uses C11 <stdatomic.h>, gated behind this switch in MSVC.
+  target_compile_options(test_runner PRIVATE /experimental:c11atomics)
+endif()
 
 enable_testing()
 add_test(NAME suite COMMAND test_runner)
@@ -94,6 +101,9 @@ add_test(NAME suite COMMAND test_runner)
 add_executable(money-books-mcp ${MB_ENGINE_SRC} src/mcpd/main.c)
 mb_target_common(money-books-mcp)
 target_compile_options(money-books-mcp PRIVATE $<$<C_COMPILER_ID:AppleClang,Clang,GNU>:-O2>)
+if(WIN32)
+  target_link_libraries(money-books-mcp PRIVATE bcrypt)   # mb_id.c → BCryptGenRandom
+endif()
 
 # ---------------------------------------------------------------------------
 # GUI app (MoneyBooks): webview shell + live read-only sharing over iroh.
@@ -117,6 +127,13 @@ if(EXISTS ${WV}/core/src/webview.cc AND EXISTS ${IROH_DIR})
   add_library(mb_webview STATIC ${WV}/core/src/webview.cc)
   target_compile_definitions(mb_webview PUBLIC WEBVIEW_STATIC)
   target_include_directories(mb_webview PUBLIC ${WV}/core/include)
+  if(WIN32)
+    # WebView2 SDK headers (from the Microsoft.Web.WebView2 nuget, vendored under
+    # src/vendor/webview2). webview uses its built-in loader, so no loader .lib is
+    # linked — the WebView2 runtime ships with Edge on Win10/11.
+    target_include_directories(mb_webview PRIVATE
+      ${CMAKE_SOURCE_DIR}/src/vendor/webview2/build/native/include)
+  endif()
 
   # iroh staticlib (the lone Rust dependency), built by cargo. The custom command has no
   # source deps listed, so CMake (re)builds it only when the artifact is missing — run the
@@ -145,6 +162,9 @@ if(EXISTS ${WV}/core/src/webview.cc AND EXISTS ${IROH_DIR})
   target_compile_definitions(MoneyBooks PRIVATE MB_WITH_SHARE WEBVIEW_STATIC)
   target_include_directories(MoneyBooks PRIVATE ${IROH_DIR} ${WV}/core/include)
   target_link_libraries(MoneyBooks PRIVATE mb_webview ${IROH_LIB})
+  if(MSVC)
+    target_compile_options(MoneyBooks PRIVATE /experimental:c11atomics)  # main.c uses <stdatomic.h>
+  endif()
 
   if(APPLE)
     # iroh's macOS native-static-libs + the WKWebView frameworks.
@@ -154,9 +174,16 @@ if(EXISTS ${WV}/core/src/webview.cc AND EXISTS ${IROH_DIR})
       "-framework SecurityFoundation" "-framework Foundation" "-framework CoreFoundation"
       objc iconv)
   elseif(WIN32)
-    # iroh's Windows native-static-libs + WebView2/COM. Finalized in the platform step.
+    # iroh's Windows native-static-libs + WebView2/COM, plus the shell's own deps:
+    # comdlg32 (GetSaveFileNameW), user32 (GetActiveWindow), bcrypt (mb_id entropy).
     target_link_libraries(MoneyBooks PRIVATE
-      ws2_32 userenv bcrypt ntdll secur32 crypt32 ncrypt advapi32 ole32 oleaut32 shell32 version)
+      ws2_32 userenv bcrypt ntdll secur32 crypt32 ncrypt advapi32 ole32 oleaut32 shell32 version
+      comdlg32 user32)
+    # main() with the GUI subsystem (WIN32 above ⇒ no console window). Without this the
+    # MSVC/clang linker would look for WinMain; mainCRTStartup keeps our plain main().
+    if(MSVC)
+      target_link_options(MoneyBooks PRIVATE /ENTRY:mainCRTStartup)
+    endif()
   elseif(UNIX)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(GTK REQUIRED gtk+-3.0)

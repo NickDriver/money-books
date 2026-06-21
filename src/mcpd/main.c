@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "support/mb_compat.h"  /* getline + ssize_t on Windows; no-op elsewhere */
 #include "store/store.h"
 #include "account/account.h"
 #include "seed/seed.h"

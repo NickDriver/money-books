@@ -59,7 +59,9 @@ int mb_test_main(int argc, char **argv) {
 
   signal(SIGSEGV, on_signal);
   signal(SIGABRT, on_signal);
-  signal(SIGBUS, on_signal);
+#ifdef SIGBUS
+  signal(SIGBUS, on_signal);   /* not defined in the Windows CRT */
+#endif
 
   int run = 0, passed = 0, failed = 0;
   for (int i = 0; i < n; i++) {

@@ -105,6 +105,15 @@ mb_err mb_share_iroh_bind(mb_share_endpoint **out, char *out_addr, size_t addr_n
   if (endpoint_bind(&cfg, NULL, NULL, &ep) != ENDPOINT_RESULT_OK)
     return MB_FAIL(MB_ERR_IO, "iroh: endpoint bind failed");
 
+  /* Wait until the endpoint is online — iroh defines that as having a home relay
+   * AND at least one direct address. Without this we read the address too early and
+   * advertise only raw LAN IPs (relay_url=None); a guest then has no path unless a
+   * direct UDP connection to us succeeds (blocked by the host's firewall/NAT, or even
+   * Wi-Fi client isolation on the same LAN). Waiting puts a relay URL in the address
+   * so there's always a fallback path. Best-effort: if it times out (offline / relay
+   * unreachable) we still serve on whatever direct addresses we have. */
+  (void)endpoint_online(&ep, 10000);
+
   EndpointAddr_t addr = endpoint_addr_default();
   if (endpoint_addr(&ep, &addr) != ENDPOINT_RESULT_OK) {
     endpoint_close(ep);
@@ -164,6 +173,10 @@ mb_err mb_share_iroh_connect(const char *addr_str, mb_share_transport *t) {
     endpoint_addr_free(addr);   /* not yet consumed — free it */
     return MB_FAIL(MB_ERR_IO, "iroh: bind failed");
   }
+  /* Come online (home relay + a direct address) before dialing, so we can reach a
+   * host that's only reachable via relay. Best-effort — connect still works on a
+   * direct LAN path if the relay isn't available. */
+  (void)endpoint_online(&ep, 10000);
   Connection_t *conn = connection_default();
   /* endpoint_connect takes `addr` BY VALUE and consumes it — do NOT free addr afterward
    * (that was a double-free). The client example likewise never frees a from_string addr. */

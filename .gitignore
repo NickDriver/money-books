@@ -22,6 +22,8 @@ ui/dist/
 src/vendor/webview/
 # iroh-c-ffi is cloned by scripts/fetch_iroh.sh (the lone Rust dep; share/app builds only)
 src/vendor/iroh-c-ffi/
+# WebView2 SDK headers (Microsoft.Web.WebView2 nuget) — fetched, not committed (Windows GUI)
+src/vendor/webview2/
 
 # user data — a book is a private SQLite file; NEVER publish real financial data
 *.sqlite

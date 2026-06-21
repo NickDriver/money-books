@@ -33,13 +33,27 @@ void mb_test_fail(mb_test *t, const char *file, int line, const char *fmt, ...)
     MB_PRINTF(4, 5);
 int  mb_test_main(int argc, char **argv);
 
+/* Portable "run before main()" — Clang/GCC use a constructor attribute; MSVC has
+ * none, so we stash a function pointer in the CRT's .CRT$XCU init array (the same
+ * mechanism the CRT uses for C++ static initializers) and force-keep it with
+ * /include since /OPT:REF can't see the section-driven reference. */
+#if defined(_MSC_VER)
+#  pragma section(".CRT$XCU", read)
+#  define MB_INITIALIZER(fn) \
+     static void fn(void); \
+     __declspec(allocate(".CRT$XCU")) void (*fn##_xcu)(void) = fn; \
+     __pragma(comment(linker, "/include:" #fn "_xcu")) \
+     static void fn(void)
+#else
+#  define MB_INITIALIZER(fn) __attribute__((constructor)) static void fn(void)
+#endif
+
 /* Define a test. Body receives `mb_test *t` (used implicitly by the macros). */
 #define TEST(suite_, name_) \
   static void mbt_fn_##suite_##_##name_(mb_test *t); \
   static mb_test mbt_node_##suite_##_##name_ = { \
       #suite_, #name_, __FILE__, __LINE__, mbt_fn_##suite_##_##name_, 0, NULL }; \
-  __attribute__((constructor)) \
-  static void mbt_ctor_##suite_##_##name_(void) { \
+  MB_INITIALIZER(mbt_ctor_##suite_##_##name_) { \
     mb_test_register(&mbt_node_##suite_##_##name_); } \
   static void mbt_fn_##suite_##_##name_(mb_test *t)
 

@@ -15,10 +15,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <time.h>
 #include <stdint.h>
 #include <limits.h>
+
+#include "support/mb_compat.h"        /* getcwd/realpath/PATH_MAX (Windows) + <unistd.h> (POSIX) */
 
 #include <webview/api.h>              /* C API (vendored via scripts/fetch_webview.sh) */
 #include "vendor/cjson/cJSON.h"
@@ -33,6 +34,14 @@
 #include "support/mb_thread.h"     /* portable thread for the accept loop (pthread/Win32) */
 #include "share/iroh.h"            /* host bind/accept + guest connect (iroh QUIC) */
 #include "share/share.h"           /* mb_share_serve (host) / mb_share_call (guest) */
+
+/* Short back-off in the accept loop. usleep is POSIX; Windows has Sleep (ms).
+ * mb_thread.h already pulled <windows.h> (guarded) on Win32. */
+#ifdef _WIN32
+#  define mb_usleep(us) Sleep((DWORD)((us) / 1000))
+#else
+#  define mb_usleep(us) usleep(us)
+#endif
 
 /* Host-side sharing: the iroh endpoint is bound once per app session (so the key the owner
  * sends stays stable); share_start/share_stop just toggle `serving`, which the accept loop
@@ -133,7 +142,7 @@ static void *share_loop(void *arg) {
   for (;;) {
     mb_share_transport t;
     if (mb_share_iroh_accept(c->share.ep, &t) != MB_OK) {
-      usleep(100000);   /* transient accept error (stray datagram); back off, keep listening */
+      mb_usleep(100000);   /* transient accept error (stray datagram); back off, keep listening */
       continue;
     }
     if (!atomic_load(&c->share.serving)) { t.close(t.ctx); continue; }  /* stopped → refuse */

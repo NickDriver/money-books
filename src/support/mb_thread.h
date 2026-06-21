@@ -10,10 +10,7 @@
 #define MB_SUPPORT_THREAD_H
 
 #ifdef _WIN32
-#  ifndef WIN32_LEAN_AND_MEAN
-#    define WIN32_LEAN_AND_MEAN
-#  endif
-#  include <windows.h>
+#  include "mb_win.h"   /* guarded <windows.h> (NOMB avoids the MB_OK collision) */
 typedef CRITICAL_SECTION   mb_mutex;
 typedef CONDITION_VARIABLE mb_cond;
 typedef HANDLE             mb_thread;

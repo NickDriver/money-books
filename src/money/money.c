@@ -1,11 +1,35 @@
 #include "money.h"
 
 #include <ctype.h>
+#include <stdint.h>
 #include <stdio.h>
+
+/* Overflow-checked 64-bit signed arithmetic. Clang/GCC have type-generic
+ * builtins; MSVC has neither, so fall back to manual checks (signed multiply
+ * uses the x64 _mul128 intrinsic). Every money value here is 64-bit signed. */
+#if defined(__GNUC__) || defined(__clang__)
+#  define MB_ADD_OVERFLOW(a, b, out) __builtin_add_overflow((a), (b), (out))
+#  define MB_MUL_OVERFLOW(a, b, out) __builtin_mul_overflow((a), (b), (out))
+#else
+#  include <intrin.h>
+static inline int mb_add_overflow_i64(int64_t a, int64_t b, int64_t *out) {
+  /* wraparound result is well-defined on unsigned; detect signed overflow first */
+  *out = (int64_t)((uint64_t)a + (uint64_t)b);
+  return ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b));
+}
+static inline int mb_mul_overflow_i64(int64_t a, int64_t b, int64_t *out) {
+  int64_t hi;
+  int64_t lo = _mul128(a, b, &hi);   /* full 128-bit signed product */
+  *out = lo;
+  return hi != (lo >> 63);           /* fits in int64 iff hi is sign-extension of lo */
+}
+#  define MB_ADD_OVERFLOW(a, b, out) mb_add_overflow_i64((a), (b), (out))
+#  define MB_MUL_OVERFLOW(a, b, out) mb_mul_overflow_i64((a), (b), (out))
+#endif
 
 mb_err mb_money_add(mb_money a, mb_money b, mb_money *out) {
   if (!out) return MB_FAIL(MB_ERR_INVALID_ARG, "out is NULL");
-  if (__builtin_add_overflow(a, b, out))
+  if (MB_ADD_OVERFLOW(a, b, out))
     return MB_FAIL(MB_ERR_OVERFLOW, "%lld + %lld overflows",
                    (long long)a, (long long)b);
   return MB_OK;
@@ -13,7 +37,7 @@ mb_err mb_money_add(mb_money a, mb_money b, mb_money *out) {
 
 mb_err mb_money_mul(mb_money amount, int64_t qty, mb_money *out) {
   if (!out) return MB_FAIL(MB_ERR_INVALID_ARG, "out is NULL");
-  if (__builtin_mul_overflow(amount, qty, out))
+  if (MB_MUL_OVERFLOW(amount, qty, out))
     return MB_FAIL(MB_ERR_OVERFLOW, "%lld * %lld overflows",
                    (long long)amount, (long long)qty);
   return MB_OK;
@@ -22,7 +46,7 @@ mb_err mb_money_mul(mb_money amount, int64_t qty, mb_money *out) {
 mb_err mb_money_line_total(mb_money unit_price, int64_t qty_centi, mb_money *out) {
   if (!out) return MB_FAIL(MB_ERR_INVALID_ARG, "out is NULL");
   int64_t prod;
-  if (__builtin_mul_overflow(unit_price, qty_centi, &prod))
+  if (MB_MUL_OVERFLOW(unit_price, qty_centi, &prod))
     return MB_FAIL(MB_ERR_OVERFLOW, "%lld x %lld/100 overflows",
                    (long long)unit_price, (long long)qty_centi);
   int64_t q = prod / 100, r = prod % 100;   /* round half away from zero */
@@ -46,8 +70,8 @@ mb_err mb_money_parse(const char *s, mb_money *out) {
   int64_t whole = 0;
   int saw_digit = 0;
   while (isdigit((unsigned char)*s)) {
-    if (__builtin_mul_overflow(whole, (int64_t)10, &whole) ||
-        __builtin_add_overflow(whole, (int64_t)(*s - '0'), &whole))
+    if (MB_MUL_OVERFLOW(whole, (int64_t)10, &whole) ||
+        MB_ADD_OVERFLOW(whole, (int64_t)(*s - '0'), &whole))
       return MB_FAIL(MB_ERR_OVERFLOW, "value too large");
     s++;
     saw_digit = 1;
@@ -69,8 +93,8 @@ mb_err mb_money_parse(const char *s, mb_money *out) {
   if (!saw_digit) return MB_FAIL(MB_ERR_PARSE, "no digits");
 
   int64_t total;
-  if (__builtin_mul_overflow(whole, (int64_t)100, &total) ||
-      __builtin_add_overflow(total, cents, &total))
+  if (MB_MUL_OVERFLOW(whole, (int64_t)100, &total) ||
+      MB_ADD_OVERFLOW(total, cents, &total))
     return MB_FAIL(MB_ERR_OVERFLOW, "value too large");
 
   *out = neg ? -total : total;

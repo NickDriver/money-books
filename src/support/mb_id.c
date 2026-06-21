@@ -1,11 +1,24 @@
 #include "mb_id.h"
 
-#include <sys/random.h>  /* getentropy — macOS & modern Linux */
+/* Cryptographic entropy, per platform. macOS & modern Linux expose getentropy(2);
+ * Windows has no such header, so we use BCryptGenRandom (system-preferred RNG). */
+#ifdef _WIN32
+#  include "mb_win.h"   /* guarded <windows.h> (NOMB avoids the MB_OK collision) */
+#  include <bcrypt.h>   /* link: bcrypt.lib */
+static int mb_fill_entropy(unsigned char *b, size_t n) {
+  return BCRYPT_SUCCESS(BCryptGenRandom(NULL, b, (ULONG)n, BCRYPT_USE_SYSTEM_PREFERRED_RNG)) ? 0 : -1;
+}
+#else
+#  include <sys/random.h>  /* getentropy — macOS & modern Linux */
+static int mb_fill_entropy(unsigned char *b, size_t n) {
+  return getentropy(b, n);
+}
+#endif
 
 mb_err mb_uuid(char *out, size_t buflen) {
   if (!out || buflen < 37) return MB_FAIL(MB_ERR_INVALID_ARG, "uuid buffer too small");
   unsigned char b[16];
-  if (getentropy(b, sizeof b) != 0) return MB_FAIL(MB_ERR_INTERNAL, "getentropy failed");
+  if (mb_fill_entropy(b, sizeof b) != 0) return MB_FAIL(MB_ERR_INTERNAL, "entropy source failed");
   b[6] = (unsigned char)((b[6] & 0x0F) | 0x40);  /* version 4 */
   b[8] = (unsigned char)((b[8] & 0x3F) | 0x80);  /* variant   */
   static const char hex[] = "0123456789abcdef";
