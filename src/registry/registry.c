@@ -6,11 +6,19 @@
 #include "../support/mb_compat.h"   /* mkdir/stat/S_ISDIR/unlink (portable across POSIX/Win32) */
 #include "vendor/cjson/cJSON.h"
 
-/* ---- config dir (the one platform-specific bit; D23) ---- */
+/* ---- config dir (the one platform-specific bit; D23) ----
+ * The base dir comes from a per-platform env var (MB_APP_HOME_ENV) joined with a
+ * per-platform subdir. On Windows that's %APPDATA%\MoneyBooks (Roaming app data);
+ * elsewhere it's the home dir plus the platform's conventional app-data path. */
 #if defined(__APPLE__)
-#  define MB_APP_SUBDIR "/Library/Application Support/MoneyBooks"
+#  define MB_APP_SUBDIR   "/Library/Application Support/MoneyBooks"
+#  define MB_APP_HOME_ENV "HOME"
+#elif defined(_WIN32)
+#  define MB_APP_SUBDIR   "\\MoneyBooks"
+#  define MB_APP_HOME_ENV "APPDATA"   /* C:\Users\<user>\AppData\Roaming */
 #else
-#  define MB_APP_SUBDIR "/.local/share/MoneyBooks"   /* XDG-ish fallback */
+#  define MB_APP_SUBDIR   "/.local/share/MoneyBooks"   /* XDG-ish fallback */
+#  define MB_APP_HOME_ENV "HOME"
 #endif
 
 static mb_err app_dir(char *buf, size_t n) {
@@ -18,8 +26,8 @@ static mb_err app_dir(char *buf, size_t n) {
   if (home && home[0]) {
     snprintf(buf, n, "%s", home);
   } else {
-    home = getenv("HOME");
-    if (!home || !home[0]) return MB_FAIL(MB_ERR_IO, "HOME not set");
+    home = getenv(MB_APP_HOME_ENV);
+    if (!home || !home[0]) return MB_FAIL(MB_ERR_IO, "%s not set", MB_APP_HOME_ENV);
     snprintf(buf, n, "%s%s", home, MB_APP_SUBDIR);
   }
   if (mkdir(buf, 0700) != 0) {
