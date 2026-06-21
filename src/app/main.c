@@ -60,6 +60,14 @@ struct app_share {
   atomic_int         serving;     /* start→1, stop→0; the accept loop's gate */
   atomic_long        guests;      /* total guests served (status display) */
 };
+
+/* One queued guest call awaiting forwarding to the host (see guest_worker). */
+typedef struct guest_req {
+  char *id;                  /* webview request id to resolve */
+  char *method;
+  char *args;
+  struct guest_req *next;
+} guest_req;
 #endif
 
 struct app_ctx {
@@ -72,6 +80,14 @@ struct app_ctx {
   mb_share_transport remote;       /* guest mode: live connection to a host */
   int                remote_active;
   char               remote_addr[1024];
+  /* guest forwarding worker: one thread drains this FIFO over the single iroh
+   * stream so the UI thread never blocks on a network round-trip (see guest_worker) */
+  mb_mutex           gq_mu;
+  mb_cond            gq_cv;
+  guest_req         *gq_head, *gq_tail;
+  int                gq_running;    /* 1 while the worker should keep draining */
+  int                gq_dead;       /* set once the transport has failed */
+  mb_thread          gq_thread;
 #endif
 };
 
@@ -88,6 +104,93 @@ static const char *sget(const cJSON *a, const char *key) {
   const cJSON *v = cJSON_GetObjectItemCaseSensitive(a, key);
   return cJSON_IsString(v) ? v->valuestring : NULL;
 }
+
+#ifdef MB_WITH_SHARE
+/* ---- guest call forwarding worker ----
+ * A connected guest forwards every engine call to the host over a SINGLE iroh stream
+ * (strict request/response). Doing that inline in on_invoke blocks the webview UI
+ * thread for a full network round-trip — across a relay that freezes the window on
+ * each tab switch. Instead on_invoke enqueues here and returns immediately; this one
+ * worker thread owns the stream, forwards calls in order, and resolves each JS promise
+ * back on the UI thread via webview_dispatch (the only thread allowed to call
+ * webview_return). One worker (not one-per-call) preserves the stream's serial nature. */
+static char *dup_str(const char *s) {
+  size_t n = strlen(s) + 1;
+  char *p = malloc(n);
+  if (p) memcpy(p, s, n);
+  return p;
+}
+
+struct gw_done { char *id; char *result; };
+static void guest_deliver(webview_t w, void *arg) {   /* runs on the UI thread */
+  struct gw_done *d = arg;
+  webview_return(w, d->id, 0, d->result ? d->result : "{}");
+  free(d->id); free(d->result); free(d);
+}
+
+static void *guest_worker(void *arg) {
+  struct app_ctx *c = arg;
+  for (;;) {
+    mb_mutex_lock(&c->gq_mu);
+    while (c->gq_running && !c->gq_head) mb_cond_wait(&c->gq_cv, &c->gq_mu);
+    if (!c->gq_running && !c->gq_head) { mb_mutex_unlock(&c->gq_mu); break; }
+    guest_req *r = c->gq_head;
+    c->gq_head = r->next;
+    if (!c->gq_head) c->gq_tail = NULL;
+    int dead = c->gq_dead;
+    mb_mutex_unlock(&c->gq_mu);
+
+    char *result = NULL;
+    if (dead) {
+      result = json_err(MB_ERR_IO, "lost connection to the shared book");
+    } else if (mb_share_call(&c->remote, r->method, r->args, &result) != MB_OK) {
+      free(result);
+      result = json_err(MB_ERR_IO, "lost connection to the shared book");
+      mb_mutex_lock(&c->gq_mu); c->gq_dead = 1; mb_mutex_unlock(&c->gq_mu);
+      c->remote_active = 0;   /* UI thread reads this; benign race */
+    }
+    struct gw_done *d = malloc(sizeof *d);
+    if (d) { d->id = r->id; d->result = result; webview_dispatch(c->w, guest_deliver, d); }
+    else { free(r->id); free(result); }
+    free(r->method); free(r->args); free(r);
+  }
+  return NULL;
+}
+
+static void guest_enqueue(struct app_ctx *c, const char *id, const char *method, const char *args) {
+  guest_req *r = calloc(1, sizeof *r);
+  if (!r) return;
+  r->id = dup_str(id); r->method = dup_str(method); r->args = dup_str(args);
+  mb_mutex_lock(&c->gq_mu);
+  if (c->gq_tail) c->gq_tail->next = r; else c->gq_head = r;
+  c->gq_tail = r;
+  mb_cond_signal(&c->gq_cv);
+  mb_mutex_unlock(&c->gq_mu);
+}
+
+static void guest_worker_start(struct app_ctx *c) {
+  mb_mutex_init(&c->gq_mu);
+  mb_cond_init(&c->gq_cv);
+  c->gq_head = c->gq_tail = NULL;
+  c->gq_dead = 0;
+  c->gq_running = 1;
+  if (mb_thread_create(&c->gq_thread, guest_worker, c) != 0) c->gq_running = 0;
+}
+
+/* Joins the worker before the caller frees the transport. May briefly block if a
+ * forwarded call is mid-flight; it returns once that round-trip (or iroh's timeout
+ * on a vanished host) completes. */
+static void guest_worker_stop(struct app_ctx *c) {
+  if (!c->gq_running) return;
+  mb_mutex_lock(&c->gq_mu);
+  c->gq_running = 0;
+  mb_cond_signal(&c->gq_cv);
+  mb_mutex_unlock(&c->gq_mu);
+  mb_thread_join(c->gq_thread);
+  mb_mutex_destroy(&c->gq_mu);
+  mb_cond_destroy(&c->gq_cv);
+}
+#endif
 
 /* Switch the active book: open `path`, close the previous store, record it in the registry. */
 static mb_err open_book(struct app_ctx *c, const char *path) {
@@ -206,6 +309,7 @@ static char *share_connect(struct app_ctx *c, const cJSON *a) {
   mb_err e = mb_share_iroh_connect(addr, &c->remote);
   if (e != MB_OK) return json_err(e, NULL);
   c->remote_active = 1;
+  guest_worker_start(c);   /* forward calls off the UI thread from here on */
   snprintf(c->remote_addr, sizeof c->remote_addr, "%s", addr);
   if (c->s) { mb_store_close(c->s); c->s = NULL; }
   c->book_path[0] = '\0';
@@ -215,7 +319,12 @@ static char *share_connect(struct app_ctx *c, const cJSON *a) {
 }
 
 static char *share_disconnect(struct app_ctx *c) {
-  if (c->remote_active) { c->remote.close(c->remote.ctx); c->remote_active = 0; }
+  if (c->remote_active || c->gq_running) {
+    guest_worker_stop(c);                 /* join before freeing the stream it reads */
+    if (c->remote.ctx) c->remote.close(c->remote.ctx);
+    c->remote.ctx = NULL;
+    c->remote_active = 0;
+  }
   cJSON *o = cJSON_CreateObject();
   cJSON_AddBoolToObject(o, "ok", 1);
   return json_take(o);
@@ -389,18 +498,9 @@ static void on_invoke(const char *id, const char *req, void *arg) {
    * single shared stream. A transport failure means the host stopped or the link dropped —
    * surface it and drop back to disconnected so the UI can return to the launcher. */
   if (c->remote_active) {
-    char *result = NULL;
-    mb_err e = mb_share_call(&c->remote, method, args, &result);
-    if (e != MB_OK) {
-      c->remote.close(c->remote.ctx);
-      c->remote_active = 0;
-      char *r = json_err(MB_ERR_IO, "lost connection to the shared book");
-      webview_return(w, id, 0, r);
-      free(r); free(result); cJSON_Delete(params);
-      return;
-    }
-    webview_return(w, id, 0, result ? result : "{}");
-    free(result);
+    /* Hand off to the worker thread and return immediately — the UI stays responsive
+     * while the call round-trips to the host; the worker resolves `id` when it lands. */
+    guest_enqueue(c, id, method, args);
     cJSON_Delete(params);
     return;
   }
@@ -503,7 +603,10 @@ int main(int argc, char **argv) {
   webview_run(w);
   webview_destroy(w);
 #ifdef MB_WITH_SHARE
-  if (c.remote_active) c.remote.close(c.remote.ctx);
+  if (c.remote_active || c.gq_running) {
+    guest_worker_stop(&c);                 /* join the forwarding worker first */
+    if (c.remote.ctx) c.remote.close(c.remote.ctx);
+  }
   /* the detached share loop + its read-only handle + endpoint are reclaimed at process exit;
    * we never free the endpoint here (it would race the loop blocked in accept). */
 #endif
