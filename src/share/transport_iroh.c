@@ -173,10 +173,10 @@ mb_err mb_share_iroh_connect(const char *addr_str, mb_share_transport *t) {
     endpoint_addr_free(addr);   /* not yet consumed — free it */
     return MB_FAIL(MB_ERR_IO, "iroh: bind failed");
   }
-  /* Come online (home relay + a direct address) before dialing, so we can reach a
-   * host that's only reachable via relay. Best-effort — connect still works on a
-   * direct LAN path if the relay isn't available. */
-  (void)endpoint_online(&ep, 10000);
+  /* NB: we deliberately do NOT wait for endpoint_online() here. The guest dials a
+   * relay lazily during connect as needed; forcing a relay home first was observed to
+   * leave the connection on a relay path that stalled after the first frame. Only the
+   * host needs to be online (so its advertised address carries a relay URL). */
   Connection_t *conn = connection_default();
   /* endpoint_connect takes `addr` BY VALUE and consumes it — do NOT free addr afterward
    * (that was a double-free). The client example likewise never frees a from_string addr. */
